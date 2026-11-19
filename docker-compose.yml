@@ -1,0 +1,67 @@
+# Leilão on-line distribuído — 3 nós (+ nó 4 opcional para demonstrar a descoberta).
+#
+#   docker compose up --build                     sobe os nós 1, 2 e 3
+#   docker compose --profile extra up -d node4    adiciona o nó 4 com o cluster rodando
+#   docker compose stop node3                     derruba o líder (nó de maior ID)
+#
+# Os nós NÃO conhecem os endereços uns dos outros: todos entram na rede "leilao-net"
+# com o alias "leilao-cluster", e cada nó resolve esse nome no DNS do Docker para
+# descobrir os IPs dos vizinhos.
+
+name: leilao
+
+x-node: &node
+  build: .
+  image: leilao-node:latest
+  networks:
+    leilao-net:
+      aliases: [leilao-cluster]
+  restart: "no"
+
+x-env: &env
+  DISCOVERY_HOSTS: leilao-cluster
+  HEARTBEAT_INTERVAL: "1.0"
+  FAILURE_TIMEOUT: "3.0"
+  CS_DELAY: "0.25"          # tempo dentro da seção crítica (deixa a fila do mutex visível)
+  WRITE_QUORUM: majority    # ou um número, ex.: "1" para ver o efeito de quórum fraco
+
+services:
+  node1:
+    <<: *node
+    hostname: node1
+    environment:
+      <<: *env
+      NODE_ID: "1"
+      PUBLIC_URL: http://localhost:8001
+    ports: ["8001:8000"]
+
+  node2:
+    <<: *node
+    hostname: node2
+    environment:
+      <<: *env
+      NODE_ID: "2"
+      PUBLIC_URL: http://localhost:8002
+    ports: ["8002:8000"]
+
+  node3:
+    <<: *node
+    hostname: node3
+    environment:
+      <<: *env
+      NODE_ID: "3"
+      PUBLIC_URL: http://localhost:8003
+    ports: ["8003:8000"]
+
+  node4:
+    <<: *node
+    hostname: node4
+    profiles: ["extra"]
+    environment:
+      <<: *env
+      NODE_ID: "4"
+      PUBLIC_URL: http://localhost:8004
+    ports: ["8004:8000"]
+
+networks:
+  leilao-net:
