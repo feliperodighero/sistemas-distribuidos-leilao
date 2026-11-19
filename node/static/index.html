@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Leilão distribuído</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 1.5rem; padding: 1.5rem; max-width: 1280px; margin: 0 auto; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  h2 { font-size: 1.05rem; font-weight: 700; margin-bottom: .75rem; }
+
+  .lots { display: grid; gap: .5rem; }
+  .lot {
+    display: grid; grid-template-columns: 1fr auto; gap: .2rem 1rem; align-items: baseline;
+    width: 100%; text-align: left; cursor: pointer; padding: .9rem 1rem;
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-m);
+  }
+  .lot[aria-current="true"] { border-color: var(--ink); box-shadow: inset 4px 0 0 var(--ink); }
+  .lot .title { font-weight: 650; font-size: 1.05rem; }
+  .lot .price { font-size: 1.35rem; font-weight: 800; }
+  .lot .meta { font-size: .88rem; color: var(--ink-soft); }
+  .lot.closed { opacity: .7; }
+  .empty { padding: 1.5rem; border: 1px dashed var(--line); border-radius: var(--radius-m); color: var(--ink-soft); }
+
+  .stage { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-m); padding: 1.5rem; }
+  .stage h3 { font-size: 1.5rem; font-weight: 750; letter-spacing: -.01em; }
+  .big-price { font-size: clamp(2.4rem, 5vw, 3.6rem); font-weight: 850; letter-spacing: -.02em; margin: .4rem 0 .1rem; }
+  .bidline { display: flex; gap: .6rem; flex-wrap: wrap; margin: 1.1rem 0 1.4rem; align-items: end; }
+  .bidline input { width: 11rem; font-size: 1.1rem; }
+  .countdown { font-weight: 700; }
+  .countdown.ending { color: var(--bad); }
+  .winner { margin-top: .8rem; padding: .8rem 1rem; border-radius: var(--radius-s); background: #e6f4ec; color: var(--ok); font-weight: 650; }
+
+  table { width: 100%; border-collapse: collapse; font-size: .95rem; }
+  th { text-align: left; font-weight: 600; color: var(--ink-soft); font-size: .85rem; padding: .4rem .5rem; border-bottom: 1px solid var(--line); }
+  td { padding: .5rem; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  td.amount { font-weight: 700; text-align: right; }
+  th.amount { text-align: right; }
+  tr.top td { background: #fffbea; }
+
+  .side { display: grid; gap: 1rem; margin-top: 1.5rem; }
+  .you { display: flex; gap: .6rem; align-items: end; flex-wrap: wrap; }
+  details { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-m); padding: .8rem 1rem; }
+  summary { cursor: pointer; font-weight: 650; }
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .7rem; margin-top: .8rem; }
+  .form-grid .wide { grid-column: 1 / -1; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <h1>Leilão distribuído</h1>
+  <span class="pill" id="conn">conectando…</span>
+  <span class="pill" id="leader">leiloeiro: —</span>
+  <a href="/dashboard" id="dash-link">Painel do cluster</a>
+</header>
+
+<main>
+  <section aria-labelledby="lots-h">
+    <h2 id="lots-h">Leilões</h2>
+    <div class="lots" id="lots"><div class="empty">Carregando leilões…</div></div>
+
+    <div class="side">
+      <div class="you">
+        <label>Seu nome (aparece nos lances)
+          <input id="bidder" maxlength="40" placeholder="ex.: Felipe" autocomplete="nickname">
+        </label>
+      </div>
+      <details id="create-box">
+        <summary>Criar leilão</summary>
+        <form id="create-form" class="form-grid">
+          <label class="wide">Item
+            <input name="title" required maxlength="80" placeholder="ex.: Notebook usado">
+          </label>
+          <label>Preço inicial (R$)
+            <input name="start_price" type="number" min="1" step="0.01" value="100" required>
+          </label>
+          <label>Incremento mínimo (R$)
+            <input name="min_increment" type="number" min="0.01" step="0.01" value="10" required>
+          </label>
+          <label>Duração (segundos)
+            <input name="duration_s" type="number" min="10" max="7200" value="180" required>
+          </label>
+          <div style="display:flex;align-items:end"><button class="btn" type="submit">Criar leilão</button></div>
+        </form>
+      </details>
+    </div>
+  </section>
+
+  <section class="stage" id="stage" aria-live="polite">
+    <p class="muted">Escolha um leilão à esquerda para ver os lances e participar.</p>
+  </section>
+</main>
+
+<div id="toasts" role="status"></div>
+
+<script src="/static/common.js"></script>
+<script>
+let auctions = [];
+let selected = store("leilao.selected");
+let detail = null;
+let lastBidCount = -1;
+
+const $ = id => document.getElementById(id);
+$("bidder").value = store("leilao.bidder") || "";
+$("bidder").addEventListener("change", e => store("leilao.bidder", e.target.value.trim()));
+
+Cluster.onSwitch = (from, to) => toast(`O nó em ${from} não respondeu. Conectado agora a ${to}.`, "bad");
+
+function fmtTime(s) {
+  s = Math.max(0, Math.round(s));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function renderLots() {
+  const box = $("lots");
+  if (!auctions.length) {
+    box.innerHTML = `<div class="empty">Nenhum leilão ainda. Abra “Criar leilão” abaixo para começar o primeiro.</div>`;
+    return;
+  }
+  box.innerHTML = auctions.map(a => {
+    const top = a.highest_bid;
+    const open = a.status === "open";
+    const meta = open
+      ? `${a.bid_count} ${a.bid_count === 1 ? "lance" : "lances"} · termina em <span class="num">${fmtTime(a.remaining_s)}</span>`
+      : (a.winner ? `encerrado, vencedor ${esc(a.winner.bidder)}` : "encerrado sem lances");
+    return `<button class="lot ${open ? "" : "closed"}" data-id="${a.id}" aria-current="${a.id === selected}">
+        <span class="title">${esc(a.title)}</span>
+        <span class="price num">${brl(top ? top.amount : a.start_price)}</span>
+        <span class="meta">${meta}</span>
+        <span class="meta">${top ? "por " + esc(top.bidder) : "lance inicial"}</span>
+      </button>`;
+  }).join("");
+  box.querySelectorAll(".lot").forEach(b => b.onclick = () => { selected = b.dataset.id; store("leilao.selected", selected); lastBidCount = -1; tick(); });
+}
+
+function renderStage() {
+  const st = $("stage");
+  if (!detail) return;
+  const a = detail;
+  const top = a.highest_bid;
+  const open = a.status === "open";
+  const bids = [...a.bids].sort((x, y) => y.seq - x.seq);
+  const rows = bids.map(b => `<tr class="${top && b.id === top.id ? "top" : ""}">
+      <td class="num">${b.seq}</td>
+      <td class="stamp">(L=${b.lamport}, nó ${b.node_id})</td>
+      <td>${esc(b.bidder)}</td>
+      <td>${nodeTag(b.node_id)}</td>
+      <td class="amount num">${brl(b.amount)}</td></tr>`).join("");
+  const focused = document.activeElement && document.activeElement.id === "amount";
+  const prevAmount = $("amount") ? $("amount").value : "";
+  st.innerHTML = `
+    <h3>${esc(a.title)}</h3>
+    <div class="big-price num ${lastBidCount >= 0 && a.bid_count !== lastBidCount ? "flash" : ""}">${brl(top ? top.amount : a.start_price)}</div>
+    <div class="muted">${top ? `maior lance de <strong>${esc(top.bidder)}</strong>, recebido pelo ${nodeTag(top.node_id)}` : "ninguém deu lance ainda"}
+      · ${open ? `termina em <span class="countdown num ${a.remaining_s < 15 ? "ending" : ""}">${fmtTime(a.remaining_s)}</span>` : "leilão encerrado"}</div>
+    ${open ? `
+      <form class="bidline" id="bid-form">
+        <label>Seu lance (mínimo ${brl(a.min_next_bid)})
+          <input id="amount" type="number" step="0.01" min="${a.min_next_bid}" value="${focused ? prevAmount : a.min_next_bid}" required>
+        </label>
+        <button class="btn btn-bid" type="submit">Dar lance</button>
+      </form>` : (a.winner
+        ? `<div class="winner">Vencedor: ${esc(a.winner.bidder)} com ${brl(a.winner.amount)}</div>`
+        : `<div class="winner" style="background:#eef0f4;color:var(--ink-soft)">Encerrado sem lances</div>`)}
+    <h2 style="margin-top:1rem">Histórico na ordem acordada pelo cluster</h2>
+    ${bids.length ? `<table><thead><tr><th>seq</th><th>Lamport</th><th>licitante</th><th>recebido por</th><th class="amount">valor</th></tr></thead><tbody>${rows}</tbody></table>`
+                  : `<p class="muted">Os lances aparecem aqui assim que a maioria dos nós os confirmar.</p>`}`;
+  lastBidCount = a.bid_count;
+  if (focused) { const el = $("amount"); el.focus(); el.setSelectionRange?.(el.value.length, el.value.length); }
+  const form = $("bid-form");
+  if (form) form.onsubmit = onBid;
+}
+
+async function onBid(ev) {
+  ev.preventDefault();
+  const bidder = $("bidder").value.trim();
+  if (!bidder) { toast("Preencha seu nome antes de dar lance.", "bad"); $("bidder").focus(); return; }
+  store("leilao.bidder", bidder);
+  const amount = parseFloat($("amount").value);
+  const btn = ev.target.querySelector("button");
+  btn.disabled = true; btn.textContent = "Enviando…";
+  const request_id = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random())).replace(/-/g, "").slice(0, 16);
+  try {
+    const { status, body } = await Cluster.json(`/api/auctions/${selected}/bids`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ bidder, amount, request_id }),
+    }, 12000);
+    if (body.accepted) toast(`Lance aceito: ${brl(body.bid.amount)} (posição ${body.bid.seq} no log, L=${body.bid.lamport}).`, "ok");
+    else if (status === 503) toast(`O leiloeiro está indisponível no momento (${body.detail || "eleição em andamento"}). Tente de novo em alguns segundos.`, "bad");
+    else toast(`Lance recusado: ${body.reason || body.detail || "erro"}.`, "bad");
+  } catch { toast("Nenhum nó respondeu. Verifique se o cluster está no ar.", "bad"); }
+  tick();
+}
+
+$("create-form").onsubmit = async ev => {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  const payload = { title: f.get("title"), start_price: +f.get("start_price"), min_increment: +f.get("min_increment"), duration_s: +f.get("duration_s") };
+  try {
+    const { body } = await Cluster.json("/api/auctions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) }, 12000);
+    if (body.created) {
+      toast(`Leilão “${body.auction.title}” criado.`, "ok");
+      selected = body.auction.id; store("leilao.selected", selected); lastBidCount = -1;
+      ev.target.reset(); $("create-box").open = false;
+    } else toast(`Leilão não criado: ${body.reason || body.detail || "erro"}.`, "bad");
+  } catch { toast("Nenhum nó respondeu. Verifique se o cluster está no ar.", "bad"); }
+  tick();
+};
+
+async function refreshHeader() {
+  try {
+    const c = await Cluster.refresh();
+    $("conn").innerHTML = `conectado ao ${nodeTag(c.node_id)}`;
+    $("leader").innerHTML = c.leader_id ? `leiloeiro: ${nodeTag(c.leader_id)} termo ${c.term}` : "leiloeiro: em eleição…";
+    $("dash-link").href = Cluster.base + "/dashboard";
+  } catch {
+    $("conn").textContent = "sem conexão com o cluster";
+  }
+}
+
+async function tick() {
+  try {
+    const { body } = await Cluster.json("/api/auctions");
+    auctions = body.auctions || [];
+    if (!selected && auctions.length) selected = auctions[0].id;
+    renderLots();
+    if (selected && auctions.some(a => a.id === selected)) {
+      const r = await Cluster.json(`/api/auctions/${selected}`);
+      if (r.status === 200) { detail = r.body; renderStage(); }
+    }
+  } catch { /* o aviso de troca de nó já foi mostrado */ }
+}
+
+refreshHeader(); tick();
+setInterval(tick, 1000);
+setInterval(refreshHeader, 2000);
+</script>
+</body>
+</html>

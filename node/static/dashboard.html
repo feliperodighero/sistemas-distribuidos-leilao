@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Painel do cluster · Leilão distribuído</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  main { padding: 1.5rem; max-width: 1400px; margin: 0 auto; display: grid; gap: 1.75rem; }
+  h2 { font-size: 1.05rem; font-weight: 700; margin-bottom: .7rem; }
+  .consensus { font-size: 1.05rem; padding: .8rem 1rem; border-radius: var(--radius-m); background: #e6f4ec; color: var(--ok); font-weight: 600; }
+  .consensus.diverge { background: #fdecea; color: var(--bad); }
+
+  .nodes { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 1rem; }
+  .node { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-m); overflow: hidden; }
+  .node .band { height: 10px; }
+  .node .body { padding: 1rem 1.1rem 1.1rem; display: grid; gap: .7rem; }
+  .node .head { display: flex; justify-content: space-between; align-items: baseline; }
+  .node .name { font-size: 1.35rem; font-weight: 800; }
+  .role { font-size: 1.6rem; font-weight: 800; letter-spacing: -.01em; }
+  .role.leader::before { content: "🔨 "; }
+  .node.down { opacity: .55; }
+  .node.down .role { color: var(--bad); }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: .25rem .9rem; margin: 0; font-size: .95rem; }
+  dt { color: var(--ink-soft); }
+  dd { margin: 0; font-weight: 650; }
+  .hash { display: inline-block; padding: .05rem .45rem; border-radius: var(--radius-s); color: #fff; font-weight: 700; }
+  .peers { display: flex; gap: .35rem; flex-wrap: wrap; font-size: .85rem; }
+  .peer { display: inline-flex; gap: .3rem; align-items: center; }
+  .peer.dead { text-decoration: line-through; color: var(--bad); }
+  .electing { color: #8a5a00; font-weight: 700; }
+
+  .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); gap: 1.5rem; }
+  @media (max-width: 980px) { .split { grid-template-columns: 1fr; } }
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-m); padding: 1rem 1.1rem; }
+  .lock { padding: .6rem 0; border-bottom: 1px solid var(--line); }
+  .lock:last-child { border-bottom: 0; }
+  .queue { margin: .35rem 0 0; padding-left: 1.2rem; }
+
+  .timeline { max-height: 460px; overflow: auto; font-size: .92rem; }
+  .ev { display: grid; grid-template-columns: 5.5rem 3.4rem 7.3rem 1fr; gap: .6rem; padding: .35rem 0; border-bottom: 1px solid var(--line); align-items: baseline; }
+  .ev .kind { font-weight: 650; color: var(--ink-soft); }
+  .filters { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: .6rem; }
+  .filters button[aria-pressed="true"] { background: var(--ink); color: #fff; border-color: var(--ink); }
+
+  .race { display: flex; gap: .7rem; flex-wrap: wrap; align-items: end; }
+  .race select { font: inherit; padding: .55rem .7rem; border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--surface); }
+  .results { margin-top: .8rem; display: grid; gap: .35rem; }
+  .res { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+  .res .ok { color: var(--ok); font-weight: 700; }
+  .res .bad { color: var(--bad); font-weight: 700; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <h1>Painel do cluster</h1>
+  <span class="pill" id="asked">consultando…</span>
+  <a href="/" id="back">Voltar ao leilão</a>
+</header>
+
+<main>
+  <div class="consensus" id="consensus">Carregando estado dos nós…</div>
+
+  <section aria-labelledby="nodes-h">
+    <h2 id="nodes-h">Nós</h2>
+    <div class="nodes" id="nodes"></div>
+  </section>
+
+  <div class="split">
+    <div style="display:grid;gap:1.5rem;align-content:start">
+      <section class="panel" aria-labelledby="mutex-h">
+        <h2 id="mutex-h">Exclusão mútua por item (no leiloeiro)</h2>
+        <div id="locks" class="muted">Nenhum item bloqueado agora. Use o teste abaixo para ver a fila se formar.</div>
+      </section>
+
+      <section class="panel" aria-labelledby="race-h">
+        <h2 id="race-h">Teste de concorrência</h2>
+        <p class="muted" style="margin:0 0 .8rem">Envia o mesmo valor por todos os nós ao mesmo tempo. Só um lance pode vencer, e o
+          desempate segue a ordem de Lamport (L, nó).</p>
+        <div class="race">
+          <label>Leilão <select id="race-auction"></select></label>
+          <label>Valor (R$) <input id="race-amount" type="number" step="0.01" style="width:9rem"></label>
+          <button class="btn" id="race-go">Enviar lances simultâneos</button>
+        </div>
+        <div class="results" id="race-results"></div>
+      </section>
+    </div>
+
+    <section class="panel" aria-labelledby="tl-h">
+      <h2 id="tl-h">Linha do tempo de todos os nós, ordenada por Lamport</h2>
+      <div class="filters" id="filters">
+        <button class="btn btn-ghost" data-f="all" aria-pressed="true">Tudo</button>
+        <button class="btn btn-ghost" data-f="ELEIÇÃO LÍDER FALHA HEARTBEAT RECUPERAÇÃO DESCOBERTA" aria-pressed="false">Eleição e falhas</button>
+        <button class="btn btn-ghost" data-f="LANCE MUTEX LEILÃO" aria-pressed="false">Lances e mutex</button>
+        <button class="btn btn-ghost" data-f="REPLICAÇÃO RECUPERAÇÃO" aria-pressed="false">Replicação</button>
+      </div>
+      <div class="timeline" id="timeline"></div>
+    </section>
+  </div>
+</main>
+
+<div id="toasts" role="status"></div>
+
+<script src="/static/common.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const ROLE = { leader: "Leiloeiro", recovering: "Sincronizando", follower: "Réplica", down: "Fora do ar" };
+let filter = "all";
+let lastNodes = [];
+
+Cluster.onSwitch = (from, to) => toast(`O nó em ${from} não respondeu. Painel consultando ${to}.`, "bad");
+
+function hashColor(h) {
+  if (!h) return "#999";
+  const hue = parseInt(h.slice(0, 6), 16) % 360;
+  return `hsl(${hue} 55% 38%)`;
+}
+
+function renderNodes(nodes) {
+  $("nodes").innerHTML = nodes.map(n => {
+    const c = ((n.node_id - 1) % 5) + 1;
+    if (n.role === "down") {
+      return `<article class="node down"><div class="band c${c}"></div><div class="body">
+        <div class="head"><span class="name t${c}">nó ${n.node_id}</span></div>
+        <div class="role">Fora do ar</div>
+        <div class="muted">sem resposta há ${n.last_seen_s ?? "?"} s</div></div></article>`;
+    }
+    const peers = (n.peers || []).map(p =>
+      `<span class="peer ${p.alive ? "" : "dead"}"><span class="dot t${((p.node_id - 1) % 5) + 1}"></span>nó ${p.node_id}</span>`).join("");
+    return `<article class="node"><div class="band c${c}"></div><div class="body">
+      <div class="head"><span class="name t${c}">nó ${n.node_id}</span>
+        ${n.election_running ? `<span class="electing">em eleição</span>` : ""}</div>
+      <div class="role ${n.role}">${ROLE[n.role] || n.role}</div>
+      <dl>
+        <dt>Líder que conhece</dt><dd>${n.leader_id ? "nó " + n.leader_id : "nenhum"}</dd>
+        <dt>Termo</dt><dd class="num">${n.term}</dd>
+        <dt>Relógio de Lamport</dt><dd class="num">${n.lamport}</dd>
+        <dt>Log confirmado</dt><dd class="num">${n.commit_seq} de ${n.last_seq}</dd>
+        <dt>Hash do estado</dt><dd><span class="hash stamp" style="background:${hashColor(n.log_hash)}">${n.log_hash}</span></dd>
+        <dt>Quórum</dt><dd class="num">${n.write_quorum} de ${n.cluster_size}</dd>
+      </dl>
+      <div class="peers" title="vizinhos que este nó considera vivos">${peers || '<span class="muted">nenhum vizinho</span>'}</div>
+    </div></article>`;
+  }).join("");
+}
+
+function renderConsensus(nodes) {
+  const up = nodes.filter(n => n.role !== "down");
+  const leaders = up.filter(n => n.role === "leader" || n.role === "recovering");
+  const hashes = new Set(up.map(n => n.log_hash));
+  const box = $("consensus");
+  const down = nodes.length - up.length;
+  const leaderTxt = leaders.length === 1 ? `leiloeiro: nó ${leaders[0].node_id} (termo ${leaders[0].term})`
+                  : leaders.length === 0 ? "sem leiloeiro no momento (eleição em andamento)"
+                  : `${leaders.length} nós se dizem leiloeiros`;
+  if (hashes.size === 1) {
+    box.className = "consensus";
+    box.textContent = `${up.length} nó(s) no ar${down ? `, ${down} fora` : ""} · ${leaderTxt} · todos com o mesmo estado confirmado (hash ${[...hashes][0]})`;
+  } else {
+    box.className = "consensus diverge";
+    box.textContent = `${up.length} nó(s) no ar · ${leaderTxt} · estados ainda diferentes (sincronizando…)`;
+  }
+}
+
+function renderLocks(nodes) {
+  const leader = nodes.find(n => n.role === "leader" || n.role === "recovering");
+  const locks = leader ? Object.entries(leader.locks || {}) : [];
+  if (!locks.length) { $("locks").innerHTML = `<span class="muted">Nenhum item bloqueado agora. Use o teste abaixo para ver a fila se formar.</span>`; return; }
+  $("locks").innerHTML = locks.map(([item, l]) => {
+    const h = l.holder;
+    const desc = x => x.action ? `${x.action}` : `${esc(x.bidder)} ${brl(x.amount)}`;
+    return `<div class="lock"><div>Item <span class="stamp">${item.slice(0, 6)}</span>: ${h
+        ? `na seção crítica <span class="stamp">(L=${h.key[0]}, nó ${h.key[1]})</span> ${desc(h)}` : "livre"}</div>
+      ${l.queue.length ? `<ol class="queue">${l.queue.map(q => `<li><span class="stamp">(L=${q.key[0]}, nó ${q.key[1]})</span> ${desc(q)}</li>`).join("")}</ol>` : ""}</div>`;
+  }).join("");
+}
+
+function renderTimeline(nodes) {
+  const all = [];
+  nodes.forEach(n => (n.events || []).forEach(e => all.push(e)));
+  const kinds = filter === "all" ? null : new Set(filter.split(" "));
+  const evs = all.filter(e => !kinds || kinds.has(e.kind))
+                 .sort((a, b) => b.lamport - a.lamport || b.node_id - a.node_id || b.n - a.n).slice(0, 120);
+  $("timeline").innerHTML = evs.map(e => `<div class="ev">
+      <span class="stamp">L=${e.lamport}</span>${nodeTag(e.node_id)}
+      <span class="kind">${e.kind.charAt(0) + e.kind.slice(1).toLowerCase()}</span><span>${esc(e.message)}</span></div>`).join("")
+    || `<p class="muted">Sem eventos ainda.</p>`;
+}
+
+$("filters").addEventListener("click", ev => {
+  const b = ev.target.closest("button"); if (!b) return;
+  filter = b.dataset.f;
+  $("filters").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", x === b));
+  renderTimeline(lastNodes);
+});
+
+async function loadAuctions() {
+  try {
+    const { body } = await Cluster.json("/api/auctions");
+    const sel = $("race-auction");
+    const open = (body.auctions || []).filter(a => a.status === "open");
+    const prev = sel.value;
+    sel.innerHTML = open.map(a => `<option value="${a.id}" data-min="${a.min_next_bid}">${esc(a.title)} (mín. ${brl(a.min_next_bid)})</option>`).join("")
+      || `<option value="">nenhum leilão aberto</option>`;
+    if (prev && open.some(a => a.id === prev)) sel.value = prev;
+    const opt = sel.selectedOptions[0];
+    if (opt && opt.dataset.min && document.activeElement !== $("race-amount")) $("race-amount").value = opt.dataset.min;
+  } catch {}
+}
+
+$("race-go").onclick = async () => {
+  const id = $("race-auction").value;
+  const amount = parseFloat($("race-amount").value);
+  if (!id) { toast("Crie um leilão no cliente antes de rodar o teste.", "bad"); return; }
+  const up = lastNodes.filter(n => n.role !== "down" && n.public_url);
+  $("race-results").innerHTML = `<span class="muted">Enviando ${up.length} lances…</span>`;
+  const results = await Promise.all(up.map(async n => {
+    try {
+      const r = await fetch(`${n.public_url}/api/auctions/${id}/bids`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ bidder: `Concorrente do nó ${n.node_id}`, amount }),
+      });
+      return { node: n.node_id, body: await r.json() };
+    } catch { return { node: n.node_id, body: { reason: "nó não respondeu" } }; }
+  }));
+  results.sort((a, b) => (a.body.bid?.lamport ?? 1e12) - (b.body.bid?.lamport ?? 1e12) || a.node - b.node);
+  $("race-results").innerHTML = results.map(r => `<div class="res">${nodeTag(r.node)}
+      <span class="stamp">${r.body.bid ? `(L=${r.body.bid.lamport}, nó ${r.body.bid.node_id})` : ""}</span>
+      ${r.body.accepted ? `<span class="ok">aceito, posição ${r.body.bid.seq} no log</span>`
+                        : `<span class="bad">recusado</span> <span class="muted">${esc(r.body.reason || r.body.detail || "")}</span>`}</div>`).join("");
+  loadAuctions();
+};
+
+async function tick() {
+  try {
+    const { body } = await Cluster.json("/api/cluster/status", {}, 3000);
+    lastNodes = body.nodes || [];
+    Cluster.nodes = [...new Set([Cluster.base, ...lastNodes.filter(n => n.public_url).map(n => n.public_url)])];
+    Cluster.current = 0;
+    $("asked").innerHTML = `consultando o ${nodeTag(body.asked)}`;
+    $("back").href = Cluster.base + "/";
+    renderConsensus(lastNodes); renderNodes(lastNodes); renderLocks(lastNodes); renderTimeline(lastNodes);
+  } catch {
+    $("consensus").className = "consensus diverge";
+    $("consensus").textContent = "Nenhum nó respondeu. Verifique se o cluster está no ar.";
+  }
+}
+
+tick(); loadAuctions();
+setInterval(tick, 1000);
+setInterval(loadAuctions, 3000);
+</script>
+</body>
+</html>
