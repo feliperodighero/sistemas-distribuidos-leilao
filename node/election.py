@@ -18,6 +18,7 @@ líder com termo antigo são recusadas, o que evita que um líder "zumbi" contin
 from __future__ import annotations
 
 import asyncio
+import time
 
 from . import config
 
@@ -29,31 +30,43 @@ class BullyElection:
         self.coordinator_event = asyncio.Event()
 
     def trigger(self, reason: str) -> None:
-        if self.running or self.node.is_leader:
+        if self.running or self.node.is_leader or self.node.crashed:
+            return
+        wait = config.STARTUP_GRACE - (time.monotonic() - self.node.restarted_at)
+        if wait > 0:
+            # acabou de subir: primeiro descobre os vizinhos, depois decide se precisa de eleição
+            asyncio.get_running_loop().call_later(wait, self.trigger, reason)
             return
         self.running = True
         asyncio.create_task(self._run(reason))
 
     async def _run(self, reason: str) -> None:
         node = self.node
-        node.events.add("ELEIÇÃO", f"iniciando eleição Bully ({reason})")
+        node.events.add("ELEIÇÃO", f"iniciando eleição Bully ({reason})", code="election_start", reason=reason)
+        incarnation = node.incarnation
         try:
             while True:
+                if node.crashed or node.incarnation != incarnation:
+                    return  # o nó foi derrubado/reiniciado no meio da eleição
                 higher = [p for p in node.membership.alive_peers() if p.node_id > node.id]
                 if not higher:
                     await node.become_leader()
                     return
                 self.coordinator_event.clear()
-                node.events.add("ELEIÇÃO", f"ELECTION enviado para nós {[p.node_id for p in higher]}")
+                node.events.add("ELEIÇÃO", f"ELECTION enviado para nós {[p.node_id for p in higher]}",
+                                code="election_sent", to=[p.node_id for p in higher])
                 replies = await asyncio.gather(*(
                     node.transport.send(p.url, "ELECTION", {}, timeout=config.ELECTION_TIMEOUT) for p in higher
                 ))
                 answered = [p.node_id for p, r in zip(higher, replies) if r and r["type"] == "ANSWER"]
+                if node.crashed or node.incarnation != incarnation:
+                    return
                 if not answered:
-                    node.events.add("ELEIÇÃO", "nenhum nó maior respondeu")
+                    node.events.add("ELEIÇÃO", "nenhum nó maior respondeu", code="election_no_answer")
                     await node.become_leader()
                     return
-                node.events.add("ELEIÇÃO", f"nós {answered} responderam ANSWER; aguardando COORDINATOR")
+                node.events.add("ELEIÇÃO", f"nós {answered} responderam ANSWER; aguardando COORDINATOR",
+                                code="election_answered", by=answered)
                 try:
                     await asyncio.wait_for(self.coordinator_event.wait(), config.COORDINATOR_TIMEOUT)
                     return

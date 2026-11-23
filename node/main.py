@@ -1,7 +1,8 @@
 """API HTTP do nó (FastAPI).
 
-Rotas públicas (clientes):   /api/...   + páginas / (leilão) e /dashboard (painel)
+Rotas públicas (clientes):   /api/...   + páginas / (modo apresentação), /cliente e /dashboard
 Rota interna (entre nós):    POST /internal/msg   (envelope descrito em docs/PROTOCOLO.md)
+Administração (demo):        /api/admin/crash, /api/admin/restart, /api/admin/speed
 """
 from __future__ import annotations
 
@@ -9,13 +10,13 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .node import LeaderUnavailable, Node
+from .node import LeaderUnavailable, Node, NodeCrashed
 
 STATIC = Path(__file__).parent / "static"
 node = Node()
@@ -29,8 +30,25 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Leilão On-line Distribuído", lifespan=lifespan)
+
+ALWAYS_ON = ("/api/admin/", "/static/", "/health")
+PAGES = ("/", "/cliente", "/dashboard")
+
+
+@app.middleware("http")
+async def crashed_guard(request: Request, call_next):
+    """Nó "derrubado": só as páginas e a administração respondem; o resto devolve 503."""
+    path = request.url.path
+    if node.crashed and path not in PAGES and not path.startswith(ALWAYS_ON):
+        return JSONResponse({"crashed": True, "detail": f"nó {node.id} está fora do ar"},
+                            status_code=503, headers={"X-Node-Crashed": "1"})
+    return await call_next(request)
+
+
 # Os clientes web trocam de nó quando um cai, então precisam chamar outras origens.
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# (adicionado depois do guard para ficar por fora dele e pôr os cabeçalhos CORS também no 503)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+                   expose_headers=["X-Node-Crashed"])
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -38,6 +56,10 @@ class BidIn(BaseModel):
     bidder: str = Field(min_length=1, max_length=40)
     amount: float = Field(gt=0, le=1_000_000_000)
     request_id: str | None = Field(default=None, max_length=40)  # idempotência ao reenviar
+
+
+class SpeedIn(BaseModel):
+    slow: bool
 
 
 class AuctionIn(BaseModel):
@@ -51,13 +73,37 @@ class AuctionIn(BaseModel):
 # ---------------------------------------------------------------- comunicação entre nós
 @app.post("/internal/msg")
 async def internal_message(envelope: dict):
-    return await node.handle_message(envelope)
+    try:
+        return await node.handle_message(envelope)
+    except NodeCrashed:
+        raise HTTPException(503, "nó fora do ar")
+
+
+# ---------------------------------------------------------------- administração (modo apresentação)
+@app.post("/api/admin/crash")
+async def admin_crash():
+    """Falha simulada: o nó para de enviar e de responder (como se o processo morresse)."""
+    node.crash()
+    return {"node_id": node.id, "crashed": True}
+
+
+@app.post("/api/admin/restart")
+async def admin_restart():
+    """Religa o nó com a memória vazia, como um processo recém-iniciado."""
+    node.restart()
+    return {"node_id": node.id, "crashed": False}
+
+
+@app.post("/api/admin/speed")
+async def admin_speed(body: SpeedIn):
+    node.set_speed(body.slow)
+    return {"node_id": node.id, "slow": node.slow}
 
 
 # ---------------------------------------------------------------- API dos clientes
 @app.get("/health")
 async def health():
-    return {"ok": True, "node_id": node.id}
+    return {"ok": True, "node_id": node.id, "crashed": node.crashed}
 
 
 @app.get("/api/auctions")
@@ -124,13 +170,26 @@ async def cluster_status():
         else:
             nodes.append({"node_id": peer.node_id, "public_url": peer.public_url, "role": "down",
                           "last_seen_s": round(peer.seconds_since_seen(), 1)})
+    # nós que já conheci antes de um reinício ou que outro nó vê: não sumir da mesa
+    seen = {n["node_id"] for n in nodes}
+    for peer_status in [n for n in nodes if n.get("peers")]:
+        for p in peer_status["peers"]:
+            if p["node_id"] not in seen:
+                seen.add(p["node_id"])
+                nodes.append({"node_id": p["node_id"], "public_url": p.get("public_url", ""),
+                              "role": "down", "last_seen_s": p.get("last_seen_s")})
     nodes.sort(key=lambda n: n["node_id"])
     return {"asked": node.id, "nodes": nodes}
 
 
 # ---------------------------------------------------------------- páginas
 @app.get("/")
-async def index():
+async def demo():
+    return FileResponse(STATIC / "demo.html")
+
+
+@app.get("/cliente")
+async def client_page():
     return FileResponse(STATIC / "index.html")
 
 

@@ -18,6 +18,8 @@ const Cluster = {
         const timer = setTimeout(() => ctrl.abort(), timeoutMs);
         const resp = await fetch(base + path, { ...opts, signal: ctrl.signal });
         clearTimeout(timer);
+        // nó "derrubado" pelo modo apresentação: responde 503 com este cabeçalho
+        if (resp.status === 503 && resp.headers.get("X-Node-Crashed")) throw new Error("nó fora do ar");
         return resp;
       } catch (err) {
         lastErr = err;

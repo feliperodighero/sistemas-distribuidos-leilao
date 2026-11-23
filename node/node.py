@@ -27,23 +27,37 @@ class LeaderUnavailable(Exception):
     pass
 
 
+class NodeCrashed(Exception):
+    """O nó está "derrubado" (falha simulada pelo modo apresentação)."""
+
+
 class Node:
     def __init__(self) -> None:
         self.id = config.NODE_ID
         self.started_at = time.time()
         self.clock = LamportClock()
         self.events = EventLog(self.id, self.clock)
+        self.transport = Transport(self)
+        self.crashed = False   # falha simulada (botão "Derrubar" do modo apresentação)
+        self.incarnation = 0   # conta quantas vezes o nó "reiniciou"
+        self.slow = False      # câmera lenta: seção crítica mais longa para a fila aparecer
+        self.cs_delay = config.CS_DELAY
+        self._tasks: list[asyncio.Task] = []
+        self._reset_state()
+
+    def _reset_state(self) -> None:
+        """Estado que se perde quando o processo reinicia (fica só em memória)."""
+        self.restarted_at = time.monotonic()
         self.term = 0
         self.leader_id: int | None = None
         self.role = "follower"
         self.synced_term = -1  # termo do líder com quem meu log foi verificado
         self.log = ReplicatedLog()
         self.membership = Membership(self)
-        self.transport = Transport(self)
         self.election = BullyElection(self)
         self.replicator = Replicator(self)
-        self.mutex = MutexCoordinator(config.MUTEX_HOLDBACK, on_event=self.events.add)
-        self._tasks: list[asyncio.Task] = []
+        holdback = 0.5 if self.slow else config.MUTEX_HOLDBACK
+        self.mutex = MutexCoordinator(holdback, on_event=self.events.add)
         self._hb_inflight: set[int] = set()
         self._closing: set[str] = set()
 
@@ -51,10 +65,40 @@ class Node:
     async def start(self) -> None:
         self.events.add("INÍCIO", f"nó {self.id} iniciado; descoberta via DNS {config.DISCOVERY_HOSTS}")
         self._tasks = [
-            asyncio.create_task(self.membership.discovery_loop()),
+            asyncio.create_task(self._discovery_loop()),
             asyncio.create_task(self._heartbeat_loop()),
             asyncio.create_task(self._auction_closer_loop()),
         ]
+
+    async def _discovery_loop(self) -> None:
+        while True:
+            if not self.crashed:
+                await self.membership.discover_once()
+            await asyncio.sleep(config.DISCOVERY_INTERVAL)
+
+    # ================================================================== falha simulada / câmera lenta
+    def crash(self) -> None:
+        """Derruba o nó: ele para de enviar e de responder qualquer mensagem (como um processo morto)."""
+        if self.crashed:
+            return
+        self.crashed = True
+        self.events.add("FALHA", f"nó {self.id} DERRUBADO: não envia nem responde mais nada", code="crashed")
+
+    def restart(self) -> None:
+        """Religa o nó como um processo novo: memória vazia (log, termo, relógio, vizinhos)."""
+        self.crashed = False
+        self.incarnation += 1
+        self.clock._time = 0
+        self._reset_state()
+        self.events.add("INÍCIO", f"nó {self.id} religado com memória vazia; vai redescobrir o cluster",
+                        code="restarted")
+
+    def set_speed(self, slow: bool) -> None:
+        self.slow = slow
+        self.cs_delay = 1.2 if slow else config.CS_DELAY
+        self.mutex.holdback = 0.5 if slow else config.MUTEX_HOLDBACK
+        self.events.add("INÍCIO", "câmera lenta LIGADA" if slow else "câmera lenta desligada",
+                        code="speed", slow=slow)
 
     async def stop(self) -> None:
         for t in self._tasks:
@@ -80,20 +124,25 @@ class Node:
         self.leader_id = leader_id
         self.role = "follower"
         if changed or was_leader:
-            self.events.add("LÍDER", f"novo leiloeiro: nó {leader_id} (termo {self.term})")
+            self.events.add("LÍDER", f"novo leiloeiro: nó {leader_id} (termo {self.term})",
+                            code="new_leader", leader=leader_id, term=self.term)
 
     async def become_leader(self) -> None:
+        if self.crashed:
+            return
         self.term += 1
         my_term = self.term
         self.leader_id = self.id
         self.role = "recovering"
-        self.events.add("LÍDER", f"assumi como LEILOEIRO (termo {my_term}); sincronizando log")
+        self.events.add("LÍDER", f"assumi como LEILOEIRO (termo {my_term}); sincronizando log",
+                        code="leader_elected", term=my_term)
         await self.announce_coordinator()
         await self.replicator.recover()
         if self.role == "recovering" and self.term == my_term:
             self.role = "leader"
             self.synced_term = my_term
-            self.events.add("LÍDER", f"pronto para receber lances (commit={self.log.commit_seq})")
+            self.events.add("LÍDER", f"pronto para receber lances (commit={self.log.commit_seq})",
+                            code="leader_ready", term=my_term)
 
     async def announce_coordinator(self) -> None:
         peers = self.membership.alive_peers()
@@ -104,16 +153,17 @@ class Node:
         if term > self.term:
             self.term = term
             if self.is_leader:
-                self.events.add("LÍDER", f"termo {term} visto no nó {sender}: deixo de ser líder")
+                self.events.add("LÍDER", f"termo {term} visto no nó {sender}: deixo de ser líder",
+                                code="stepped_down", term=term)
                 self.role = "follower"
                 self.leader_id = None
 
     # ================================================================== heartbeat / falhas
     async def _heartbeat_loop(self) -> None:
-        await asyncio.sleep(config.STARTUP_GRACE)
-        if self.leader_id is None:
-            self.election.trigger("nó iniciou e não conhece líder")
         while True:
+            if self.crashed:
+                await asyncio.sleep(config.HEARTBEAT_INTERVAL)
+                continue
             for peer in list(self.membership.peers.values()):
                 if peer.node_id not in self._hb_inflight:
                     asyncio.create_task(self._heartbeat(peer))
@@ -137,15 +187,20 @@ class Node:
         self.membership.check_failures()
         if self.is_leader:
             return
+        if time.monotonic() - self.restarted_at < config.STARTUP_GRACE:
+            return  # acabou de subir: primeiro descobre os vizinhos e ouve se já há líder
         leader = self.membership.get(self.leader_id)
         if self.leader_id is not None and (leader is None or not leader.alive):
-            self.events.add("FALHA", f"leiloeiro (nó {self.leader_id}) caiu")
+            self.events.add("FALHA", f"leiloeiro (nó {self.leader_id}) caiu", code="leader_down",
+                            leader=self.leader_id)
             self.leader_id = None
         if self.leader_id is None:
             self.election.trigger("sem leiloeiro")
 
     # ================================================================== mensagens recebidas
     async def handle_message(self, env: dict) -> dict:
+        if self.crashed:
+            raise NodeCrashed()
         self.clock.update(env["lamport"])  # regra 3 de Lamport
         sender, term, payload = int(env["sender"]), int(env["term"]), env.get("payload") or {}
         self.membership.touch(sender)
@@ -186,7 +241,8 @@ class Node:
             self.observe_term(term, sender)
             if sender == self.leader_id and not self.is_leader:
                 # quem eu achava que era o líder diz que não é mais: esqueço e espero/eleijo outro
-                self.events.add("LÍDER", f"nó {sender} informou que não é mais o leiloeiro")
+                self.events.add("LÍDER", f"nó {sender} informou que não é mais o leiloeiro",
+                                code="leader_gone", leader=sender)
                 self.leader_id = None
         if self.leader_id == sender and self.synced_term == term:
             self.log.set_commit(p.get("commit_seq", 0))
@@ -203,6 +259,8 @@ class Node:
         if term < self.term:
             return {"ok": False, "stale_term": True}
         self.set_leader(sender, term)
+        if self.log.conflicts_with_commit(p["entry"]):
+            return {"ok": False, "ahead": True}  # o líder não tem um lance que eu já confirmei
         if not self.log.accept(p["entry"], p.get("prev_id")):
             return {"ok": False, "need_snapshot": True}
         self.synced_term = term
@@ -213,11 +271,14 @@ class Node:
         if term < self.term:
             return {"ok": False, "stale_term": True}
         self.set_leader(sender, term)
+        if not self.log.keeps_committed(p["entries"]):
+            return {"ok": False, "ahead": True}  # aceitar apagaria lances confirmados
         changed = self.log.install(p["entries"], p.get("commit_seq", 0))
         self.synced_term = term
         if changed:
             self.events.add("REPLICAÇÃO", f"snapshot do líder instalado: {self.log.last_seq} entradas, "
-                                          f"hash {self.log.committed_hash()}")
+                                          f"hash {self.log.committed_hash()}",
+                            code="snapshot_installed", entries=self.log.last_seq, leader=sender)
         return {"ok": True, "changed": changed}
 
     async def _on_commit(self, sender, term, p):
@@ -255,14 +316,16 @@ class Node:
         key = order_key(bid["lamport"], bid["node_id"])
         info = {"bid_id": bid["id"], "bidder": bid["bidder"], "amount": bid["amount"], "node_id": bid["node_id"]}
         async with self.mutex.hold(bid["auction_id"], key, info):
-            await asyncio.sleep(config.CS_DELAY)  # "trabalho" dentro da seção crítica
+            await asyncio.sleep(self.cs_delay)  # "trabalho" dentro da seção crítica
             existing = self.log.state.bids_by_id.get(bid["id"])
             if existing:
                 return {"accepted": True, "bid": existing, "duplicate": True}
             reason = self.log.state.validate_bid(bid)
             if reason:
                 self.events.add("LANCE", f"REJEITADO {bid['bidder']} R$ {bid['amount']:.2f} "
-                                         f"(L={bid['lamport']}, nó {bid['node_id']}): {reason}")
+                                         f"(L={bid['lamport']}, nó {bid['node_id']}): {reason}",
+                                code="bid_rejected", bidder=bid["bidder"], amount=bid["amount"],
+                                key=[bid["lamport"], bid["node_id"]], reason=reason)
                 return {"accepted": False, "reason": reason, "bid": bid}
             try:
                 entry = await self.replicator.commit("BID", bid, bid["lamport"])
@@ -271,7 +334,9 @@ class Node:
             except NotLeader:
                 return {"error": "not_leader"}
             self.events.add("LANCE", f"ACEITO {bid['bidder']} R$ {bid['amount']:.2f} "
-                                     f"(L={bid['lamport']}, nó {bid['node_id']}) seq={entry['seq']}")
+                                     f"(L={bid['lamport']}, nó {bid['node_id']}) seq={entry['seq']}",
+                            code="bid_accepted", bidder=bid["bidder"], amount=bid["amount"],
+                            key=[bid["lamport"], bid["node_id"]], seq=entry["seq"])
             return {"accepted": True, "bid": dict(bid, seq=entry["seq"])}
 
     async def leader_create_auction(self, data: dict) -> dict:
@@ -284,14 +349,15 @@ class Node:
             return {"created": False, "reason": str(exc)}
         except NotLeader:
             return {"error": "not_leader"}
-        self.events.add("LEILÃO", f"leilão '{data['title']}' criado ({data['duration_s']}s)")
+        self.events.add("LEILÃO", f"leilão '{data['title']}' criado ({data['duration_s']}s)",
+                        code="auction_created", title=data["title"])
         return {"created": True, "auction": self.log.state.summary(self.log.state.auctions[data["id"]])}
 
     async def _auction_closer_loop(self) -> None:
         """O leiloeiro encerra os leilões cujo prazo acabou (continua após troca de líder)."""
         while True:
             await asyncio.sleep(0.5)
-            if not self.is_ready_leader:
+            if self.crashed or not self.is_ready_leader:
                 continue
             for auction_id in self.log.state.open_auctions_past_deadline():
                 if auction_id not in self._closing:
@@ -308,7 +374,10 @@ class Node:
                 winner = self.log.state.highest_bid(auction)
                 await self.replicator.commit("CLOSE", {"auction_id": auction_id, "winner": winner}, key[0])
                 who = f"{winner['bidder']} com R$ {winner['amount']:.2f}" if winner else "sem lances"
-                self.events.add("LEILÃO", f"'{auction['title']}' ENCERRADO — vencedor: {who}")
+                self.events.add("LEILÃO", f"'{auction['title']}' ENCERRADO — vencedor: {who}",
+                                code="auction_closed", title=auction["title"],
+                                winner=winner["bidder"] if winner else None,
+                                amount=winner["amount"] if winner else None)
         except (NoQuorum, NotLeader):
             pass  # tenta de novo na próxima volta do loop
         finally:
@@ -325,7 +394,9 @@ class Node:
             "lamport": self.clock.tick(),     # timestamp de Lamport do evento "lance recebido"
             "received_at": time.time(),
         }
-        self.events.add("LANCE", f"recebido do cliente: {bid['bidder']} R$ {bid['amount']:.2f} (L={bid['lamport']})")
+        self.events.add("LANCE", f"recebido do cliente: {bid['bidder']} R$ {bid['amount']:.2f} (L={bid['lamport']})",
+                        code="bid_received", bidder=bid["bidder"], amount=bid["amount"],
+                        key=[bid["lamport"], self.id])
         result = await self._route_to_leader("BID_REQUEST", bid, self.leader_handle_bid)
         if result.get("accepted") and "seq" in result.get("bid", {}):
             await self._wait_commit(result["bid"]["seq"])
@@ -359,7 +430,7 @@ class Node:
             elif not self.is_leader:
                 leader = self.membership.get(self.leader_id)
                 if leader is not None and leader.alive:
-                    resp = await self.transport.send(leader.url, msg_type, payload, timeout=5.0)
+                    resp = await self.transport.send(leader.url, msg_type, payload, timeout=12.0)
                     if resp and resp["type"] == "ACK" and "error" not in resp["payload"]:
                         return resp["payload"]
             await asyncio.sleep(0.3)
@@ -395,5 +466,19 @@ class Node:
                 for p in sorted(self.membership.peers.values(), key=lambda p: p.node_id)
             ],
             "locks": self.mutex.snapshot() if self.is_leader else {},
-            "events": self.events.recent(30),
+            "events": self.events.recent(40),
+            "crashed": self.crashed,
+            "slow": self.slow,
+            "messages": list(self.transport.sent)[-60:],
+            "log_tail": [self._entry_label(e) for e in self.log.entries[: self.log.commit_seq][-10:]],
         }
+
+    def _entry_label(self, entry: dict) -> dict:
+        data = entry["data"]
+        if entry["kind"] == "BID":
+            label = f"{data['bidder']} R$ {data['amount']:.0f}"
+        elif entry["kind"] == "CREATE_AUCTION":
+            label = data["title"]
+        else:
+            label = "encerrado"
+        return {"seq": entry["seq"], "kind": entry["kind"], "label": label, "term": entry["term"]}

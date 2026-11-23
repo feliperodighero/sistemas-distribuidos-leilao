@@ -25,10 +25,27 @@ docker compose up --build
 
 Abra no navegador:
 
-- Cliente do leilão: http://localhost:8001, http://localhost:8002 e http://localhost:8003. Cada aba usa um nó; abra duas para ter dois clientes.
-- Painel do cluster: http://localhost:8001/dashboard
+- **Modo apresentação: http://localhost:8001** (a página usada na demo; veja abaixo)
+- Cliente simples do leilão: http://localhost:8001/cliente (ou 8002, 8003: cada aba usa um nó)
+- Painel técnico do cluster: http://localhost:8001/dashboard
 
 Em cerca de 5 s os nós se descobrem e o nó 3 (maior ID) é eleito leiloeiro.
+
+### Modo apresentação
+
+Uma "mesa de leilão" que mostra o sistema funcionando enquanto explica cada passo:
+
+- **Nós na mesa:** cada nó aparece com sua cor, papel (leiloeiro ou réplica), relógio de Lamport, termo e as últimas entradas confirmadas do log. Log e hash iguais em todos mostram a consistência.
+- **Mensagens animadas:** bolinhas pequenas são heartbeats; pílulas rotuladas são lance, replica, commit, eleição, "sou o líder", cópia do log. Uma mensagem que não chega fica vermelha com ✕.
+- **Jogadores:** três jogadores (Ana, Beto, Carla), cada um ligado a um nó. Se o nó de um jogador cai, ele troca sozinho para outro nó (failover do cliente). Os nomes são editáveis.
+- **Narrador:** a legenda no topo e a lista à direita contam o que está acontecendo e qual conceito está agindo (Heartbeat, Bully, Lamport, Exclusão mútua, Quórum, Replicação).
+- **Cenários:**
+  - "Todos dão o mesmo lance": exclusão mútua e Lamport.
+  - "Derrubar o leiloeiro": heartbeat, Bully e recuperação.
+  - "Religar nós derrubados": volta com memória vazia e recebe o log.
+  - "Câmera lenta": o leiloeiro demora mais em cada lance, e a fila do mutex aparece.
+
+Os botões **Derrubar/Religar** fazem uma falha simulada: o processo continua vivo, mas o nó para de enviar e de responder qualquer mensagem, e ao religar volta com a memória vazia, como um processo reiniciado. A falha real continua funcionando pelo terminal (abaixo), e a página mostra as duas.
 
 ### Derrubar o líder e ver a recuperação
 
@@ -39,7 +56,18 @@ docker compose start node3    # o nó 3 volta, sincroniza o log e retoma a lider
 
 Outros cenários: `docker compose pause node3` (nó travado), `docker compose kill node3` (queda abrupta), `docker compose stop node2 node3` (sem maioria: o sistema passa a recusar lances), `docker compose --profile extra up -d node4` (nó novo descoberto sozinho).
 
-Atalhos para a apresentação: `./scripts/demo.sh` (lista os comandos).
+Atalhos para a apresentação: `./scripts/demo.sh` (lista os comandos). No Windows, use os comandos `docker compose` acima direto no PowerShell.
+
+### Testar sem Docker (Windows, PowerShell)
+
+Para conferir a lógica rapidamente, rode cada nó como um processo Python num endereço local diferente, cada um numa janela:
+
+```powershell
+python -m pip install -r requirements-dev.txt
+$env:NODE_ID="1"; $env:DISCOVERY_HOSTS="127.0.0.2,127.0.0.3,127.0.0.4"; $env:PUBLIC_URL="http://127.0.0.2:8000"; python -m uvicorn node.main:app --host 127.0.0.2 --port 8000
+```
+
+Repita trocando `NODE_ID` para 2 e 3 e os endereços para `127.0.0.3` e `127.0.0.4`. Depois abra http://127.0.0.2:8000. Na apresentação, use o Docker.
 
 ### Cliente de linha de comando
 

@@ -2,28 +2,25 @@
 
 ## Antes de entrar (pelo menos 10 min antes)
 
-1. `docker compose up -d --build` e esperar `./scripts/demo.sh estado` mostrar **CONSISTENTE** com o nó 3 como leiloeiro.
-2. Abrir quatro janelas:
-   - **Navegador A:** http://localhost:8001, com o nome "Leonardo" no campo de nome.
-   - **Navegador B:** http://localhost:8002, com o nome "Enzo".
-   - **Painel:** http://localhost:8001/dashboard (é o que fica no projetor na maior parte do tempo).
-   - **Terminal:** na pasta do projeto, com fonte grande.
-3. Criar um leilão de **10 minutos** ("Notebook Dell i7", inicial R$ 1.500, incremento R$ 50) para não acabar no meio da demo.
-4. Plano B: o vídeo de 3–4 min gravado no ensaio, aberto em outra aba.
-
-> Não use o nó 3 nos navegadores: ele vai ser derrubado. Os clientes estão nos nós 1 e 2.
+1. Abra o Docker Desktop, rode `docker compose up -d --build` e espere `docker compose ps` mostrar os 3 nós `healthy`.
+2. Abra **http://localhost:8001** (modo apresentação) em tela cheia (F11) no projetor. Em outra aba, deixe o terminal na pasta do projeto, com fonte grande.
+3. Clique em **Novo lote** para abrir um lote de 10 minutos (o anterior pode ter acabado).
+4. Se quiser, troque os nomes dos jogadores (Ana, Beto, Carla) pelos nomes do grupo: clique no nome e digite.
+5. Plano B: o vídeo de 3–4 min gravado no ensaio, aberto em outra aba.
 
 ## Roteiro (8 min)
 
-| Tempo | Quem | O que fazer | O que falar |
+| Tempo | Quem | O que fazer na tela | O que falar |
 |---|---|---|---|
-| 0:00–1:00 | Felipe | Slide da arquitetura | 3 nós iguais em contêineres; qualquer um recebe lances; o leiloeiro é eleito; HTTP/JSON com envelope único; descoberta por DNS do Docker, sem IP no código. |
-| 1:00–2:00 | Leonardo | Painel | Os 3 nós com o mesmo hash; o nó 3 é leiloeiro porque tem o maior ID (Bully); termo; relógio de Lamport de cada nó; heartbeat a cada 1 s. |
-| 2:00–3:30 | Enzo | Navegadores A e B dando lances alternados | Cada lance tem `(L, nó)`; o nó que recebe encaminha ao leiloeiro; só confirma quando a maioria gravou. Mostrar o histórico igual nas duas abas. |
-| 3:30–4:30 | Bernardo | Painel → "Teste de concorrência" | Três lances iguais ao mesmo tempo, um por nó. A fila do mutex ordena por Lamport: só um é aceito, o de menor `(L, nó)`, mesmo que tenha chegado por último. Apontar na linha do tempo. |
-| 4:30–6:30 | Felipe | Terminal: `./scripts/demo.sh derrubar 3`, depois um lance no navegador A logo em seguida | Em ~3 s sem heartbeat o nó 3 é dado como fora do ar; o nó 1 manda ELECTION; o nó 2 vence com termo novo, recupera o log e fica pronto. O lance enviado durante a eleição ficou esperando e foi aceito. O hash continua igual e nenhum lance se perdeu. |
-| 6:30–7:30 | Leonardo | `./scripts/demo.sh voltar 3` | O nó 3 volta vazio, recebe o log (snapshot) e, por ter ID maior, retoma a liderança (Bully). Hash igual nos 3. |
-| 7:30–8:00 | Enzo | (Se sobrar tempo) `./scripts/demo.sh derrubar 2` com o 3 também fora | Sem maioria o sistema recusa lances: escolhemos consistência (CP). Volte os nós depois. |
+| 0:00–1:00 | Felipe | Slide da arquitetura | 3 nós iguais em contêineres; qualquer um recebe lances; o leiloeiro é eleito; HTTP/JSON com envelope único; descoberta pelo DNS do Docker, sem IP no código. |
+| 1:00–2:00 | Leonardo | Modo apresentação parado, só olhando a mesa | O nó 3 é o leiloeiro porque tem o maior ID (Bully). As bolinhas pequenas são heartbeats: todos perguntam "está vivo?" a todos, a cada 1 s. Cada nó mostra o relógio de Lamport subindo a cada mensagem e o mesmo log/hash. |
+| 2:00–3:00 | Enzo | Ana e Beto dão lances alternados (botões "Lance") | O jogador fala com o seu nó; o nó carimba (L, nó) e manda "lance" ao leiloeiro; o leiloeiro manda "replica" e só confirma com a maioria ("commit"). O log ganha um bloco novo igual em todos os nós. |
+| 3:00–4:30 | Bernardo | Ligar **Câmera lenta** → **Todos dão o mesmo lance** | Três lances iguais ao mesmo tempo, um por nó. O leiloeiro coloca na fila (exclusão mútua: um lance por vez no lote) e a fila anda pelo menor (L, nó), não por quem chegou primeiro. Só um é aceito; os outros são recusados com o novo mínimo. Desligar a câmera lenta. |
+| 4:30–6:30 | Felipe | **Derrubar o leiloeiro** e, logo depois, um lance da Ana | O nó 3 para de responder: as bolinhas para ele ficam vermelhas. Em 3 s os outros percebem (heartbeat), o nó 1 manda "eleição", o nó 2 vence (termo novo), recupera o log e fica pronto. O lance enviado durante a eleição esperou e foi aceito. Mostrar log e hash iguais. |
+| 6:30–7:30 | Leonardo | **Religar nós derrubados** | O nó 3 volta com memória vazia, recebe a "cópia do log" e, por ter ID maior, retoma a liderança (Bully). Os três ficam com o mesmo hash. |
+| 7:30–8:00 | Enzo | (Se sobrar tempo) No terminal: `docker compose stop node2 node3`, depois um lance | Falha real de contêiner. Com 1 de 3 nós vivo não há maioria: o lance é recusado ("sem quórum"). Escolhemos consistência (CP). Depois: `docker compose start node2 node3`. |
+
+> Se o professor pedir para derrubar "de verdade", use o terminal: `docker compose stop node3` faz o mesmo que o botão, mas parando o contêiner. A página mostra o nó fora do ar do mesmo jeito; para religar, `docker compose start node3`.
 
 ## Perguntas prováveis (todos precisam saber responder)
 
@@ -62,6 +59,12 @@ Pode acontecer quando nós sobem juntos. A regra é: termo maior vence; em empat
 
 **Como os nós se encontram sem IP fixo?**
 Todos os contêineres têm o alias `leilao-cluster` na rede Docker. O DNS do Docker devolve o IP de todos, e o nó manda HELLO para cada IP para saber o ID. Por isso o nó 4 entra sozinho.
+
+**O botão "Derrubar" é uma falha de verdade?**
+Ele simula a queda do processo: o nó para de enviar e de responder qualquer mensagem, e ao religar volta sem memória. Para os outros nós é idêntico a um contêiner parado: eles só percebem pelo heartbeat. Por isso também mostramos `docker compose stop`, que para o contêiner de fato.
+
+**Vocês encontraram algum bug nos testes?**
+Dois. (1) Dois nós religados juntos se elegiam com o mesmo termo; resolvemos com desempate por ID. (2) Um líder que voltava com memória vazia podia se eleger antes de descobrir os vizinhos e fazer as réplicas "esquecerem" lances confirmados. Corrigimos em três camadas: espera de descoberta antes da eleição, o novo líder redescobre os vizinhos antes de recuperar, e as réplicas recusam apagar uma entrada confirmada (respondem `ahead`, e o líder recupera o log de novo).
 
 **Qual o limite do sistema?**
 Estado só em memória (se todos caírem juntos, perde-se tudo; dá para gravar o log em disco); o líder é gargalo de escrita; o prazo do leilão usa o relógio físico do líder; e um nó novo com ID maior sempre toma a liderança (característica do Bully).

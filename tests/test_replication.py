@@ -60,3 +60,20 @@ def test_hash_igual_para_logs_iguais():
     entry(a, i=1); a.set_commit(1)
     b.install(a.entries, 1)
     assert a.committed_hash() == b.committed_hash()
+
+
+def test_commit_nunca_diminui():
+    log = ReplicatedLog()
+    entry(log, i=1); entry(log, i=2)
+    log.set_commit(2)
+    log.set_commit(0)  # heartbeat de um líder atrasado não desfaz commits
+    assert log.commit_seq == 2 and len(log.state.auctions) == 2
+
+
+def test_snapshot_que_apagaria_commit_e_detectado():
+    """Um líder que voltou vazio não pode apagar lances que as réplicas já confirmaram."""
+    follower, empty_leader = ReplicatedLog(), ReplicatedLog()
+    entry(follower, i=1); follower.set_commit(1)
+    assert not follower.keeps_committed(empty_leader.entries)
+    other = entry(empty_leader, term=5, i=9)
+    assert follower.conflicts_with_commit(other)

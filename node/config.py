@@ -35,7 +35,7 @@ ELECTION_TIMEOUT = _float("ELECTION_TIMEOUT", 1.5)        # espera por ANSWER no
 COORDINATOR_TIMEOUT = _float("COORDINATOR_TIMEOUT", 4.0)  # espera por COORDINATOR depois de um ANSWER
 STARTUP_GRACE = _float("STARTUP_GRACE", 3.0)              # tempo para descobrir vizinhos antes da 1ª eleição
 RPC_TIMEOUT = _float("RPC_TIMEOUT", 1.0)                  # timeout padrão de uma mensagem entre nós
-FORWARD_TIMEOUT = _float("FORWARD_TIMEOUT", 8.0)          # quanto um nó insiste em entregar um lance ao líder
+FORWARD_TIMEOUT = _float("FORWARD_TIMEOUT", 15.0)         # quanto um nó insiste em entregar um lance ao líder
 
 # Exclusão mútua: janela de espera (hold-back) antes de conceder o item, para que pedidos
 # concorrentes que chegam quase juntos sejam ordenados pelo timestamp de Lamport.

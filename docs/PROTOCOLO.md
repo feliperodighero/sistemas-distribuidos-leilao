@@ -87,6 +87,7 @@ Enviado por **todo nó para todo vizinho** a cada 1 s (`HEARTBEAT_INTERVAL`). Um
 - Enviado por um candidato para **todos os nós com ID maior**.
 - Quem recebe responde `ANSWER` e inicia sua própria eleição. Se já for o líder, reenvia `COORDINATOR` para todos, sem criar termo novo.
 - Se nenhum nó maior responde em 1,5 s (`ELECTION_TIMEOUT`), o candidato vence.
+- Um nó recém-iniciado (ou religado) só inicia eleição depois de `STARTUP_GRACE` (3 s), para antes descobrir os vizinhos e ouvir se já existe líder. O novo líder também refaz a descoberta antes de recuperar o log.
 - Se algum respondeu, o candidato espera `COORDINATOR` por 4 s (`COORDINATOR_TIMEOUT`); se não chegar, recomeça.
 
 ### 4.4 `COORDINATOR` — anúncio do novo leiloeiro
@@ -165,6 +166,7 @@ O líder define `ends_at = agora + duration_s` e replica. Resposta: `{"created":
 O seguidor:
 
 - recusa com `{"ok": false, "stale_term": true}` se o termo do envelope é menor que o seu;
+- recusa com `{"ok": false, "ahead": true}` se a entrada substituiria uma entrada que ele já **confirmou**. O líder, ao receber `ahead`, refaz a recuperação (STATE_REQUEST) e adota o log mais completo. Isso protege contra um líder que voltou com memória vazia;
 - recusa com `{"ok": false, "need_snapshot": true}` se não tem a entrada `seq-1` com id `prev_id` (log atrasado ou divergente);
 - caso contrário, descarta qualquer entrada a partir de `seq` (restos não confirmados de um líder antigo), grava a nova, aplica `commit_seq` e responde `{"ok": true}`.
 
@@ -176,7 +178,7 @@ Payload `{"commit_seq": 7}`. Enviado logo após a maioria confirmar, para os seg
 
 ### 4.9 `SNAPSHOT` — log completo (líder → seguidor)
 
-Payload `{"entries": [ ... ], "commit_seq": 7}`. O seguidor troca o log pelo do líder, a menos que o snapshot seja prefixo do log que ele já tem. Depois reconstrói o estado do leilão a partir das entradas confirmadas. Resposta `{"ok": true, "changed": true|false}`.
+Payload `{"entries": [ ... ], "commit_seq": 7}`. O seguidor troca o log pelo do líder, a menos que o snapshot seja prefixo do log que ele já tem. Se o snapshot não contém todas as suas entradas confirmadas, ele recusa com `{"ok": false, "ahead": true}` (mesma regra do REPLICATE): uma entrada confirmada nunca volta a ser não confirmada. Depois reconstrói o estado do leilão a partir das entradas confirmadas. Resposta `{"ok": true, "changed": true|false}`.
 
 Usado quando:
 
@@ -251,7 +253,17 @@ Qualquer nó atende. Leituras vêm do estado confirmado local; escritas são enc
 | `GET /api/cluster` | — | líder, termo, lista de nós com `public_url` (usada para failover) |
 | `GET /api/cluster/status` | — | `STATUS` de todos os nós (painel) |
 | `GET /api/node` | — | `STATUS` só deste nó |
-| `GET /` e `GET /dashboard` | — | cliente web e painel |
+| `GET /`, `GET /cliente`, `GET /dashboard` | — | modo apresentação, cliente simples e painel técnico |
+
+### Administração (só para a demonstração)
+
+| Método e rota | Corpo | Efeito |
+|---|---|---|
+| `POST /api/admin/crash` | — | Falha simulada: o nó para de enviar mensagens; `/internal/msg` e a API pública respondem 503 (cabeçalho `X-Node-Crashed: 1`). |
+| `POST /api/admin/restart` | — | Religa o nó com memória vazia (log, termo, relógio, vizinhos), como um processo novo. |
+| `POST /api/admin/speed` | `{"slow": true\|false}` | Câmera lenta: seção crítica de 1,2 s e janela do mutex de 0,5 s. |
+
+O `STATUS` também traz `messages` (últimas mensagens enviadas: tipo, destino, Lamport, se chegou), `log_tail` (últimas entradas confirmadas) e eventos com `code` estruturado, usados pelo modo apresentação para animar e narrar.
 
 Resumo de um leilão: `id, title, start_price, min_increment, ends_at, remaining_s, status (open|closed), highest_bid, bid_count, min_next_bid, winner`.
 

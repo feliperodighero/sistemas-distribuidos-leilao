@@ -1,4 +1,8 @@
-"""Registro de eventos do nó: aparece no `docker compose logs` e no painel."""
+"""Registro de eventos do nó: aparece no `docker compose logs`, no painel e no narrador.
+
+Cada evento tem um texto (para humanos) e, quando importa para o modo apresentação,
+um `code` com dados estruturados (o narrador usa isso para montar as legendas).
+"""
 import logging
 import time
 from collections import deque
@@ -15,7 +19,7 @@ class EventLog:
         self.items: deque[dict] = deque(maxlen=maxlen)
         self.counter = 0  # desempate local para eventos com o mesmo Lamport
 
-    def add(self, kind: str, message: str) -> None:
+    def add(self, kind: str, message: str, code: str | None = None, **data) -> None:
         self.counter += 1
         ev = {
             "node_id": self.node_id,
@@ -24,6 +28,8 @@ class EventLog:
             "lamport": self.clock.value,
             "kind": kind,
             "message": message,
+            "code": code,
+            "data": data,
         }
         self.items.append(ev)
         log.info("[nó %s | L=%-5s] %-11s %s", self.node_id, ev["lamport"], kind, message)

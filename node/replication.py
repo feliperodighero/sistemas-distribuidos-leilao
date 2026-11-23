@@ -89,15 +89,29 @@ class ReplicatedLog:
         self.entries.append(entry)
         return True
 
+    def keeps_committed(self, entries: list[dict]) -> bool:
+        """O log `entries` contém todas as minhas entradas confirmadas? (nunca se apaga um commit)"""
+        return len(entries) >= self.commit_seq and all(
+            entries[i]["id"] == self.entries[i]["id"] for i in range(self.commit_seq)
+        )
+
+    def conflicts_with_commit(self, entry: dict) -> bool:
+        """A entrada recebida substituiria uma entrada minha já confirmada?"""
+        seq = entry["seq"]
+        return seq <= self.commit_seq and self.id_at(seq) != entry["id"]
+
     def install(self, entries: list[dict], commit_seq: int) -> bool:
-        """Instala um snapshot (log completo do líder). Retorna True se o log mudou."""
+        """Instala um snapshot (log completo do líder). Retorna True se o log mudou.
+
+        Quem chama deve conferir antes `keeps_committed(entries)`."""
         is_prefix = len(entries) <= len(self.entries) and all(
             e["id"] == self.entries[i]["id"] for i, e in enumerate(entries)
         )
         changed = False
         if not is_prefix:
+            keep = self.commit_seq
             self.entries = [dict(e) for e in entries]
-            self.commit_seq = 0
+            self.commit_seq = keep  # o prefixo confirmado é igual (keeps_committed)
             self._rebuild()
             changed = True
         self.set_commit(commit_seq)
@@ -105,11 +119,8 @@ class ReplicatedLog:
 
     # ------------------------------------------------------------------ commit / estado
     def set_commit(self, seq: int) -> None:
+        """Avança o commit. Uma entrada confirmada nunca volta a ser não confirmada."""
         seq = min(seq, len(self.entries))
-        if seq < self.applied:
-            self.commit_seq = seq
-            self._rebuild()
-            return
         self.commit_seq = max(self.commit_seq, seq)
         while self.applied < self.commit_seq:
             self.state.apply(self.entries[self.applied])
@@ -167,11 +178,14 @@ class Replicator:
             if acks < needed:
                 self.log.truncate(entry["seq"] - 1)
                 node.events.add("REPLICAÇÃO", f"entrada {entry['seq']} ({kind}) NÃO confirmada: "
-                                              f"{acks}/{needed} nós")
+                                              f"{acks}/{needed} nós",
+                                code="no_quorum", seq=entry["seq"], acks=acks, needed=needed)
                 raise NoQuorum(acks, needed)
             self.log.set_commit(entry["seq"])
             node.events.add("REPLICAÇÃO", f"entrada {entry['seq']} ({kind}) confirmada por "
-                                          f"{acks}/{node.membership.cluster_size()} nós")
+                                          f"{acks}/{node.membership.cluster_size()} nós",
+                            code="replicated", seq=entry["seq"], entry_kind=kind, acks=acks,
+                            size=node.membership.cluster_size(), needed=needed)
             asyncio.create_task(self._broadcast_commit())
             return entry
 
@@ -184,6 +198,9 @@ class Replicator:
         payload = resp["payload"]
         if payload.get("ok"):
             return True
+        if payload.get("ahead"):
+            self.start_rerecovery(peer.node_id)
+            return False
         if payload.get("need_snapshot"):
             return await self.send_snapshot(peer)
         return False
@@ -193,8 +210,11 @@ class Replicator:
             "entries": self.log.entries, "commit_seq": self.log.commit_seq,
         }, timeout=max(2.0, config.RPC_TIMEOUT))
         ok = bool(resp and resp["payload"].get("ok"))
+        if resp and resp["payload"].get("ahead"):
+            self.start_rerecovery(peer.node_id)
         if ok and resp["payload"].get("changed"):
-            self.node.events.add("REPLICAÇÃO", f"snapshot ({self.log.last_seq} entradas) enviado ao nó {peer.node_id}")
+            self.node.events.add("REPLICAÇÃO", f"snapshot ({self.log.last_seq} entradas) enviado ao nó {peer.node_id}",
+                                 code="snapshot_sent", peer=peer.node_id, entries=self.log.last_seq)
         return ok
 
     async def _broadcast_commit(self) -> None:
@@ -214,6 +234,26 @@ class Replicator:
         if not in_sync and not self.append_lock.locked():
             await self.send_snapshot(peer)
 
+    def start_rerecovery(self, peer_id: int) -> None:
+        """Um seguidor tem entradas confirmadas que eu não tenho: refaço a recuperação."""
+        node = self.node
+        if node.role != "leader" or getattr(self, "_rerecovering", False):
+            return
+        self._rerecovering = True
+        node.events.add("RECUPERAÇÃO", f"nó {peer_id} tem lances confirmados que eu não tenho: recuperando o log de novo",
+                        code="rerecovery", peer=peer_id)
+
+        async def run():
+            try:
+                node.role = "recovering"
+                async with self.append_lock:
+                    await self.recover()
+                if node.role == "recovering":
+                    node.role = "leader"
+            finally:
+                self._rerecovering = False
+        asyncio.create_task(run())
+
     async def recover(self) -> None:
         """Novo líder: coleta o log de todos os nós vivos e adota o mais atualizado.
 
@@ -222,6 +262,7 @@ class Replicator:
         confirmada. Escolhemos o log com maior (termo da última entrada, tamanho).
         """
         node = self.node
+        await node.membership.discover_once()  # garante que conheço todos os vizinhos antes de decidir
         peers = node.membership.alive_peers()
         responses = await asyncio.gather(*(node.transport.send(p.url, "STATE_REQUEST", {}, timeout=2.0)
                                            for p in peers))
@@ -234,9 +275,10 @@ class Replicator:
             key = (p["last_term"], p["last_seq"])
             if key > best_key:
                 best_key, best_entries, best_from = key, p["entries"], peer.node_id
-        if best_from != node.id:
+        if best_from != node.id and self.log.keeps_committed(best_entries):
             self.log.install(best_entries, 0)
         self.log.set_commit(self.log.last_seq)
         node.events.add("RECUPERAÇÃO", f"log adotado do nó {best_from}: {self.log.last_seq} entradas, "
-                                        f"hash {self.log.committed_hash()}")
+                                        f"hash {self.log.committed_hash()}",
+                        code="recovered", source=best_from, entries=self.log.last_seq, asked=len(peers))
         await asyncio.gather(*(self.send_snapshot(p) for p in peers))

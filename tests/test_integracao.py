@@ -72,8 +72,8 @@ def compose(*args):
 
 
 def test_queda_do_lider_sem_perder_lances():
-    leader = leader_of([1, 2, 3])
-    assert leader == 3, "Bully: o maior ID vivo deve ser o leiloeiro"
+    # Bully: o maior ID vivo deve ser o leiloeiro (espera o cluster se acomodar)
+    leader = wait_for(lambda: leader_of([1, 2, 3]) == 3 and 3, timeout=30)
 
     _, r = call("POST", NODES[1] + "/api/auctions",
                 {"title": "Teste integração", "start_price": 100, "min_increment": 10, "duration_s": 300})
@@ -96,7 +96,8 @@ def test_queda_do_lider_sem_perder_lances():
     finally:
         compose("start", f"node{leader}")
 
-    assert leader_of([1, 2, 3]) == 3  # o nó 3 volta e retoma a liderança (Bully)
+    # o nó 3 volta, espera a descoberta (STARTUP_GRACE) e retoma a liderança (Bully)
+    wait_for(lambda: leader_of([1, 2, 3]) == 3, timeout=30)
     same_hash([1, 2, 3])
     _, a = call("GET", f"{NODES[3]}/api/auctions/{auction}")
     assert len(a["bids"]) == 4

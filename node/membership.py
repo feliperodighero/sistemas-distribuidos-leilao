@@ -78,7 +78,8 @@ class Membership:
         peer = self.peers.get(node_id)
         if peer is None:
             self.peers[node_id] = Peer(node_id, url, public_url)
-            self.node.events.add("DESCOBERTA", f"nó {node_id} encontrado em {url}")
+            self.node.events.add("DESCOBERTA", f"nó {node_id} encontrado em {url}",
+                                 code="peer_found", peer=node_id)
             return
         if peer.url != url:
             self.node.events.add("DESCOBERTA", f"nó {node_id} mudou de endereço: {url}")
@@ -100,7 +101,7 @@ class Membership:
         peer.last_seen = time.monotonic()
         if not peer.alive:
             peer.alive = True
-            self.node.events.add("HEARTBEAT", f"nó {node_id} voltou a responder")
+            self.node.events.add("HEARTBEAT", f"nó {node_id} voltou a responder", code="peer_up", peer=node_id)
 
     def check_failures(self) -> list[int]:
         """Marca como suspeitos os nós sem contato recente. Retorna os que acabaram de cair."""
@@ -110,7 +111,8 @@ class Membership:
                 peer.alive = False
                 newly_dead.append(peer.node_id)
                 self.node.events.add("HEARTBEAT", f"nó {peer.node_id} sem heartbeat há "
-                                                  f"{peer.seconds_since_seen():.1f}s: considerado FORA DO AR")
+                                                  f"{peer.seconds_since_seen():.1f}s: considerado FORA DO AR",
+                                     code="peer_down", peer=peer.node_id)
         return newly_dead
 
     # ------------------------------------------------------------------ consultas

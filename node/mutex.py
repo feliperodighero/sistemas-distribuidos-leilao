@@ -35,7 +35,7 @@ class MutexCoordinator:
         self.holdback = holdback
         self.locks: dict[str, _ItemLock] = {}
         self._counter = itertools.count()
-        self._on_event = on_event or (lambda kind, msg: None)
+        self._on_event = on_event or (lambda kind, msg, code=None, **data: None)
 
     @asynccontextmanager
     async def hold(self, item: str, key: tuple[int, int], info: dict):
@@ -53,7 +53,8 @@ class MutexCoordinator:
         info = dict(info, key=list(key))
         heapq.heappush(lock.queue, (tuple(key), next(self._counter), fut, info, time.monotonic()))
         self._on_event("MUTEX", f"pedido {fmt(key)} entrou na fila do item {short(item)} "
-                                f"({len(lock.queue)} na fila)")
+                                f"({len(lock.queue)} na fila)",
+                       code="mutex_queued", key=list(key), size=len(lock.queue), item=item)
         loop.call_later(self.holdback, self._dispatch, item)
         try:
             await fut
@@ -68,7 +69,8 @@ class MutexCoordinator:
     def release(self, item: str) -> None:
         lock = self.locks[item]
         if lock.holder is not None:
-            self._on_event("MUTEX", f"{fmt(lock.holder['key'])} liberou o item {short(item)}")
+            self._on_event("MUTEX", f"{fmt(lock.holder['key'])} liberou o item {short(item)}",
+                           code="mutex_released", key=lock.holder["key"], item=item)
         lock.holder = None
         self._dispatch(item)
 
@@ -84,7 +86,8 @@ class MutexCoordinator:
             self._dispatch(item)
             return
         lock.holder = info
-        self._on_event("MUTEX", f"item {short(item)} concedido a {fmt(key)}")
+        self._on_event("MUTEX", f"item {short(item)} concedido a {fmt(key)}",
+                       code="mutex_granted", key=list(key), item=item, waiting=len(lock.queue))
         fut.set_result(None)
 
     def snapshot(self) -> dict:

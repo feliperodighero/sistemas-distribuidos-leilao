@@ -1,0 +1,627 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Leilão distribuído · modo apresentação</title>
+<style>
+  :root {
+    --ink: #16213a; --ink-soft: #55607a; --paper: #e9edf3; --card: #ffffff; --line: #d5dbe6;
+    --stage: #12203a; --stage-line: rgba(255,255,255,.14); --on-stage: #f3f6fb; --on-stage-soft: #a9b5cc;
+    --paddle: #f2c230; --ok: #1d7a46; --bad: #c0392b;
+    --n1: #1f9a9a; --n2: #7a5cd6; --n3: #d9475f; --n4: #3f82e0; --n5: #a07d1c;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+    color: var(--ink); background: var(--paper);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-size: 16px; line-height: 1.4; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+  button, input, select { font: inherit; color: inherit; }
+  :focus-visible { outline: 3px solid var(--n4); outline-offset: 2px; }
+  .mono { font-family: ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* topo */
+  .top { display: flex; align-items: center; gap: 12px; padding: 10px 18px; flex-wrap: wrap; }
+  .top h1 { font-size: 22px; font-weight: 750; margin: 0 auto 0 0; letter-spacing: -.01em; }
+  .top h1 span { font-weight: 500; color: var(--ink-soft); }
+  .tbtn { border: 1px solid var(--line); background: var(--card); border-radius: 10px; padding: 8px 14px; cursor: pointer; font-weight: 600; }
+  .tbtn[aria-pressed="true"] { background: var(--ink); color: #fff; border-color: var(--ink); }
+  .top select { border: 1px solid var(--line); background: var(--card); border-radius: 10px; padding: 8px 10px; max-width: 280px; }
+  .top a { color: var(--ink-soft); font-size: 14px; }
+
+  .layout { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(330px, 1fr); gap: 14px; padding: 0 14px 14px; }
+
+  /* palco */
+  .stage { background: var(--stage); border-radius: 18px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; color: var(--on-stage); }
+  .caption { padding: 16px 22px 6px; min-height: 86px; }
+  .caption .what { font-size: clamp(20px, 1.55vw, 30px); font-weight: 650; line-height: 1.25; }
+  .caption .why { font-size: clamp(14px, 1vw, 18px); color: var(--on-stage-soft); margin-top: 4px; }
+  .caption .concept { display: inline-block; font-size: 13px; font-weight: 700; color: var(--stage); background: var(--paddle); border-radius: 999px; padding: 2px 10px; margin-right: 8px; vertical-align: 3px; }
+  .table { position: relative; flex: 1; min-height: 0; }
+  .table svg.wires { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+
+  .node {
+    position: absolute; transform: translate(-50%, -50%); width: clamp(176px, 14vw, 250px);
+    background: #f7f9fc; color: var(--ink); border-radius: 14px; overflow: hidden;
+    border: 3px solid transparent; transition: opacity .3s, filter .3s, border-color .3s;
+  }
+  .node.leader { border-color: var(--paddle); box-shadow: 0 0 0 6px rgba(242,194,48,.25); }
+  .node.down { opacity: .5; filter: grayscale(1); }
+  .node .band { height: 9px; }
+  .node .body { padding: 8px 12px 10px; display: grid; gap: 6px; }
+  .node .head { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
+  .node .name { font-size: clamp(18px, 1.35vw, 24px); font-weight: 800; }
+  .node .role { font-size: 13px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: #e7ebf2; white-space: nowrap; }
+  .node.leader .role { background: var(--paddle); }
+  .node.down .role { background: #f6d5d1; color: var(--bad); }
+  .node .role.electing { background: #ffe9b3; }
+  .node .clock { display: grid; line-height: 1.1; }
+  .node .clock b { font-size: clamp(20px, 1.6vw, 30px); white-space: nowrap; }
+  .node .clock small, .node .meta { font-size: 12px; color: var(--ink-soft); }
+  .logstrip { display: flex; gap: 3px; min-height: 22px; flex-wrap: wrap; }
+  .blk { min-width: 22px; height: 22px; border-radius: 4px; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; color: var(--ink); padding: 0 3px; }
+  .blk.CREATE_AUCTION { background: #b9cdf6; } .blk.BID { background: var(--paddle); } .blk.CLOSE { background: #c6ccd8; }
+  .node .actions { display: flex; gap: 6px; }
+  .node .actions button { flex: 1; border: 0; border-radius: 8px; padding: 6px 8px; font-size: 13px; font-weight: 700; cursor: pointer; background: #e7ebf2; }
+  .node .actions button.kill { background: #fbe3e0; color: var(--bad); }
+  .node .actions button.revive { background: #dff1e6; color: var(--ok); }
+
+  .player {
+    position: absolute; transform: translate(-50%, -50%); width: clamp(176px, 13vw, 230px);
+    background: #1c2b49; border: 1px solid var(--stage-line); border-radius: 14px; padding: 9px 10px; display: grid; gap: 7px;
+  }
+  .player .who { display: flex; align-items: center; gap: 8px; }
+  .avatar { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; color: #fff; flex: none; }
+  .player input { width: 100%; min-width: 0; background: transparent; border: 0; border-bottom: 1px dashed var(--stage-line); color: var(--on-stage); font-weight: 700; font-size: 16px; padding: 1px 0; }
+  .player .via { font-size: 12px; color: var(--on-stage-soft); }
+  .player .bids { display: flex; gap: 6px; }
+  .player .bids button { flex: 1; border: 0; border-radius: 8px; padding: 7px 6px; font-weight: 800; cursor: pointer; background: var(--paddle); color: var(--stage); font-size: 14px; white-space: nowrap; }
+  .player .bids button.more { background: #f8e5a4; }
+  .player .result { font-size: 13px; min-height: 18px; font-weight: 600; }
+  .player .result.ok { color: #7fe0a8; } .player .result.bad { color: #ff9c8f; } .player .result.info { color: var(--on-stage-soft); }
+
+  .packet {
+    position: absolute; left: 0; top: 0; pointer-events: none; z-index: 5;
+    font-size: 12px; font-weight: 800; color: #fff; padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+    box-shadow: 0 0 0 2px rgba(18,32,58,.7);
+  }
+  .packet.hb { width: 9px; height: 9px; padding: 0; border-radius: 50%; opacity: .55; box-shadow: none; }
+  .packet.fail { background: var(--bad) !important; }
+
+  .scenarios { display: flex; gap: 10px; padding: 10px 14px 14px; flex-wrap: wrap; align-items: center; }
+  .scenarios button { border: 0; border-radius: 10px; padding: 10px 16px; font-weight: 750; cursor: pointer; font-size: 15px; }
+  .sc-race { background: var(--paddle); color: var(--stage); }
+  .sc-kill { background: #f3b8b0; color: #5a1610; }
+  .sc-revive { background: #bfe6cd; color: #0f3d22; }
+  .legend { margin-left: auto; display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--on-stage-soft); }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--on-stage-soft); margin-right: 4px; vertical-align: 0; }
+
+  /* lateral */
+  .side { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+  .lot { background: var(--card); border-radius: 18px; padding: 16px 18px; }
+  .lot .title { font-size: 20px; font-weight: 750; display: flex; justify-content: space-between; gap: 10px; }
+  .lot .timer { font-size: 18px; font-weight: 800; }
+  .lot .timer.ending { color: var(--bad); }
+  .lot .price { font-size: clamp(38px, 3.6vw, 60px); font-weight: 850; letter-spacing: -.02em; line-height: 1.05; margin: 6px 0 2px; }
+  .lot .price.flash { animation: flash 1.2s ease-out; border-radius: 8px; }
+  @keyframes flash { from { background: #fff3c4; } }
+  .lot .by { color: var(--ink-soft); }
+  .lot .winner { margin-top: 8px; background: #e2f3e8; color: var(--ok); padding: 8px 12px; border-radius: 10px; font-weight: 700; }
+  .hist { margin-top: 10px; display: grid; gap: 4px; font-size: 14px; }
+  .hist .row { display: grid; grid-template-columns: 34px 1fr auto auto; gap: 8px; align-items: center; }
+  .hist .row:first-child { font-weight: 700; }
+  .tag { display: inline-block; color: #fff; font-weight: 700; font-size: 12px; border-radius: 6px; padding: 1px 6px; }
+  .empty { color: var(--ink-soft); }
+  .empty button { margin-top: 8px; }
+
+  .narrator { background: var(--card); border-radius: 18px; padding: 14px 16px; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .narrator h2 { font-size: 17px; margin: 0 0 8px; }
+  .steps { overflow: auto; flex: 1; display: grid; gap: 6px; align-content: start; }
+  .step { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; padding: 6px 8px 6px 10px; border-left: 4px solid var(--line); border-radius: 4px; }
+  .step.fresh { background: #fff7d6; }
+  .step .c { font-size: 11px; font-weight: 800; color: var(--ink-soft); white-space: nowrap; padding-top: 2px; }
+  .step .t { font-size: 15px; }
+  .step .l { grid-column: 2; font-size: 12px; color: var(--ink-soft); }
+
+  #toasts { position: fixed; left: 50%; top: 66px; transform: translateX(-50%); display: grid; gap: 8px; z-index: 20; }
+  .toast { background: #fff; color: var(--ink); padding: 10px 16px; border-radius: 10px; font-weight: 650; border-left: 6px solid var(--paddle); box-shadow: 0 8px 24px rgba(18,32,58,.25); }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Leilão distribuído <span>· modo apresentação</span></h1>
+  <select id="lot-select" aria-label="Lote em pregão"></select>
+  <button class="tbtn" id="new-lot">Novo lote</button>
+  <button class="tbtn" id="slow" aria-pressed="false" title="Seção crítica mais longa: a fila do leiloeiro fica visível">Câmera lenta</button>
+  <button class="tbtn" id="hb-toggle" aria-pressed="true" title="Mostrar as bolinhas de heartbeat entre os nós">Heartbeats</button>
+  <a href="/dashboard" id="dash">Painel técnico</a>
+</header>
+
+<div class="layout">
+  <section class="stage" aria-label="Mesa do cluster">
+    <div class="caption" aria-live="polite">
+      <div class="what" id="cap-what">Conectando ao cluster…</div>
+      <div class="why" id="cap-why"></div>
+    </div>
+    <div class="table" id="table">
+      <svg class="wires" id="wires"></svg>
+    </div>
+    <div class="scenarios">
+      <button class="sc-race" id="sc-race">Todos dão o mesmo lance</button>
+      <button class="sc-kill" id="sc-kill">Derrubar o leiloeiro</button>
+      <button class="sc-revive" id="sc-revive">Religar nós derrubados</button>
+      <div class="legend" aria-label="Legenda das mensagens">
+        <span><i></i>heartbeat</span><span>lance → leiloeiro</span><span>replica → réplicas</span><span>eleição</span>
+      </div>
+    </div>
+  </section>
+
+  <aside class="side">
+    <section class="lot" id="lot" aria-live="polite"></section>
+    <section class="narrator">
+      <h2>O que está acontecendo</h2>
+      <div class="steps" id="steps"></div>
+    </section>
+  </aside>
+</div>
+<div id="toasts" role="status"></div>
+
+<script src="/static/common.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const NODE_COLORS = ["--n1", "--n2", "--n3", "--n4", "--n5"];
+const color = id => getComputedStyle(document.documentElement).getPropertyValue(NODE_COLORS[(id - 1) % 5]).trim();
+const ROLE = { leader: "Leiloeiro 🔨", recovering: "sincronizando…", follower: "réplica", down: "fora do ar" };
+const LOTS = ["Notebook usado", "Bicicleta aro 29", "Violão", "Cafeteira", "Fone sem fio", "Monitor 24\"", "Teclado mecânico", "Mochila de viagem"];
+
+const S = {
+  nodes: new Map(),        // id -> último status
+  urls: new Map(),         // id -> public_url
+  lastMsg: new Map(),      // id -> último n de mensagem visto
+  seenEv: new Set(),
+  firstPoll: true,
+  auctions: [], lotId: store("demo.lot") || null, lot: null, lastBidCount: -1,
+  slow: false, showHb: true,
+  players: [],
+  captions: [], captionUntil: 0,
+};
+
+/* ---------------- jogadores ---------------- */
+const defaultNames = ["Ana", "Beto", "Carla", "Davi"];
+function initPlayers(ids) {
+  if (S.players.length) return;
+  S.players = ids.slice(0, 3).map((id, i) => ({
+    i, home: id, via: id, name: store(`demo.p${i}`) || defaultNames[i], result: "", cls: "",
+  }));
+}
+
+/* ---------------- geometria da mesa ---------------- */
+function layout(ids) {
+  const n = ids.length, pos = new Map();
+  const presets = { 1: [[50, 38]], 2: [[25, 40], [75, 40]], 3: [[19, 48], [81, 48], [50, 21]],
+                    4: [[16, 52], [84, 52], [35, 20], [65, 20]], 5: [[14, 54], [86, 54], [28, 20], [72, 20], [50, 40]] };
+  const p = presets[n] || ids.map((_, i) => [10 + 80 * i / Math.max(1, n - 1), i % 2 ? 22 : 50]);
+  ids.forEach((id, i) => pos.set(id, p[i]));
+  return pos;
+}
+function playerSpot(nodePos) {
+  // jogadores ficam numa fileira embaixo da mesa, na direção do nó de origem
+  return [Math.min(84, Math.max(16, nodePos[0])), 87];
+}
+function px(pct, rect) { return [pct[0] / 100 * rect.width, pct[1] / 100 * rect.height]; }
+
+/* ---------------- desenho ---------------- */
+function nodeIds() { return [...S.nodes.keys()].sort((a, b) => a - b); }
+
+function renderTable() {
+  const table = $("table"), rect = table.getBoundingClientRect();
+  const ids = nodeIds(), pos = layout(ids);
+  initPlayers(ids);
+
+  ids.forEach(id => {
+    const st = S.nodes.get(id);
+    let el = document.getElementById(`node-${id}`);
+    if (!el) {
+      el = document.createElement("article");
+      el.id = `node-${id}`; el.className = "node";
+      el.innerHTML = `<div class="band" style="background:${color(id)}"></div><div class="body">
+        <div class="head"><span class="name" style="color:${color(id)}">nó ${id}</span><span class="role"></span></div>
+        <div class="clock"><b class="mono num"></b><small>relógio de Lamport</small></div>
+        <div class="logstrip" title="Últimas entradas confirmadas do log (seq)"></div>
+        <div class="meta"></div>
+        <div class="actions"><button type="button"></button></div></div>`;
+      table.appendChild(el);
+    }
+    const [x, y] = px(pos.get(id), rect);
+    el.style.left = x + "px"; el.style.top = y + "px";
+    const down = st.role === "down" || st.crashed;
+    el.classList.toggle("leader", !down && (st.role === "leader" || st.role === "recovering"));
+    el.classList.toggle("down", down);
+    const role = el.querySelector(".role");
+    role.textContent = down ? "fora do ar" : (st.election_running ? "em eleição…" : ROLE[st.role] || st.role);
+    role.classList.toggle("electing", !down && !!st.election_running);
+    el.querySelector(".clock b").textContent = down ? "—" : `L ${st.lamport}`;
+    el.querySelector(".logstrip").innerHTML = down ? "" : (st.log_tail || []).map(e =>
+      `<span class="blk ${e.kind}" title="${esc(e.label)}">${e.seq}</span>`).join("") || `<span class="meta">log vazio</span>`;
+    el.querySelector(".meta").innerHTML = down ? "não responde ao heartbeat"
+      : `termo ${st.term} · confirmadas ${st.commit_seq} · hash <span class="mono">${st.log_hash}</span>`;
+    const btn = el.querySelector(".actions button");
+    btn.className = down ? "revive" : "kill";
+    btn.textContent = down ? "Religar" : "Derrubar";
+    btn.onclick = () => down ? revive(id) : crash(id);
+  });
+
+  // jogadores
+  S.players.forEach(p => {
+    if (!pos.has(p.home)) return;
+    let el = document.getElementById(`player-${p.i}`);
+    if (!el) {
+      el = document.createElement("div");
+      el.id = `player-${p.i}`; el.className = "player";
+      el.innerHTML = `<div class="who"><span class="avatar"></span><input aria-label="Nome do jogador" maxlength="20"></div>
+        <div class="via"></div>
+        <div class="bids"><button type="button" class="min"></button><button type="button" class="more">+ R$ 50</button></div>
+        <div class="result"></div>`;
+      table.appendChild(el);
+      const inp = el.querySelector("input");
+      inp.value = p.name;
+      inp.onchange = () => { p.name = inp.value.trim() || defaultNames[p.i]; store(`demo.p${p.i}`, p.name); renderTable(); };
+      el.querySelector(".min").onclick = () => bid(p, minNext());
+      el.querySelector(".more").onclick = () => bid(p, minNext() + 50);
+    }
+    const [x, y] = px(playerSpot(pos.get(p.home)), rect);
+    el.style.left = x + "px"; el.style.top = y + "px";
+    const av = el.querySelector(".avatar");
+    av.textContent = (p.name[0] || "?").toUpperCase(); av.style.background = color(p.via);
+    el.querySelector(".via").innerHTML = `conectado ao <b style="color:${color(p.via)}">nó ${p.via}</b>${p.via !== p.home ? " (trocou de nó)" : ""}`;
+    const open = S.lot && S.lot.status === "open";
+    el.querySelector(".min").textContent = open ? `Lance ${brl(minNext())}` : "sem lote aberto";
+    el.querySelectorAll(".bids button").forEach(b => b.disabled = !open);
+    const r = el.querySelector(".result"); r.textContent = p.result; r.className = "result " + p.cls;
+  });
+
+  // fios: entre nós e jogador → nó
+  const w = $("wires");
+  let svg = "";
+  for (let a = 0; a < ids.length; a++) for (let b = a + 1; b < ids.length; b++) {
+    const [x1, y1] = px(pos.get(ids[a]), rect), [x2, y2] = px(pos.get(ids[b]), rect);
+    svg += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="rgba(255,255,255,.16)" stroke-width="2"/>`;
+  }
+  S.players.forEach(p => {
+    if (!pos.has(p.home) || !pos.has(p.via)) return;
+    const [x1, y1] = px(playerSpot(pos.get(p.home)), rect), [x2, y2] = px(pos.get(p.via), rect);
+    svg += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${color(p.via)}" stroke-width="2" stroke-dasharray="5 6" opacity=".8"/>`;
+  });
+  w.innerHTML = svg;
+}
+
+/* ---------------- mensagens voando ---------------- */
+const LABEL = { BID_REQUEST: "lance", REPLICATE: "replica", COMMIT: "commit", SNAPSHOT: "cópia do log",
+  ELECTION: "eleição", COORDINATOR: "sou o líder", STATE_REQUEST: "me manda o log", CREATE_REQUEST: "novo lote",
+  LANCE_CLIENTE: "lance" };
+
+function nodeCenter(id) {
+  const el = document.getElementById(`node-${id}`);
+  if (!el) return null;
+  return [parseFloat(el.style.left), parseFloat(el.style.top)];
+}
+
+function fly(from, to, type, ok, delay, viaPoint) {
+  const a = viaPoint || nodeCenter(from), b = nodeCenter(to);
+  if (!a || !b) return;
+  const isHb = type === "HEARTBEAT";
+  if (isHb && !S.showHb) return;
+  const el = document.createElement("div");
+  el.className = "packet" + (isHb ? " hb" : "");
+  el.style.background = color(from);
+  if (!isHb) el.textContent = LABEL[type] || type.toLowerCase();
+  $("table").appendChild(el);
+  // pista lateral: ida e volta entre os mesmos nós não se sobrepõem
+  const dx = b[0] - a[0], dy = b[1] - a[1], len = Math.hypot(dx, dy) || 1;
+  const off = (from < to ? 1 : -1) * (isHb ? 6 : 12);
+  const ox = -dy / len * off, oy = dx / len * off;
+  const p0 = [a[0] + ox, a[1] + oy], p1 = [b[0] + ox, b[1] + oy];
+  const mid = [(p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2];
+  const dur = (S.slow ? 1500 : 800) * (isHb ? 0.8 : 1);
+  const T = p => `translate(${p[0]}px, ${p[1]}px) translate(-50%, -50%)`;
+  const frames = ok
+    ? [{ transform: T(p0), opacity: 0 }, { opacity: 1, offset: .12 }, { opacity: 1, offset: .85 }, { transform: T(p1), opacity: 0 }]
+    : [{ transform: T(p0), opacity: 0 }, { opacity: 1, offset: .15 }, { transform: T(mid), opacity: 1, offset: .6 }, { transform: T(mid), opacity: 0 }];
+  if (!ok) setTimeout(() => { el.classList.add("fail"); if (!isHb) el.textContent = "✕ " + el.textContent; }, delay + dur * .55);
+  el.animate(frames, { duration: dur, delay, easing: "ease-in-out", fill: "both" }).onfinish = () => el.remove();
+}
+
+function animateMessages(statuses) {
+  const batch = [];
+  statuses.forEach(st => {
+    if (!st.messages) return;
+    const known = S.lastMsg.has(st.node_id);
+    const last = known ? S.lastMsg.get(st.node_id) : -1;
+    const fresh = st.messages.filter(m => m.n > last);
+    if (st.messages.length) S.lastMsg.set(st.node_id, Math.max(last, ...st.messages.map(m => m.n)));
+    // primeira vez que vejo este nó: não anima o histórico antigo dele
+    if (known) fresh.forEach(m => batch.push({ ...m, from: st.node_id }));
+  });
+  if (!batch.length) return;
+  batch.sort((x, y) => x.t - y.t);
+  const t0 = batch[0].t, span = Math.max(0.001, batch.at(-1).t - t0);
+  const spread = S.slow ? 1400 : 650;
+  batch.forEach(m => fly(m.from, m.to, m.type, m.ok, Math.round((m.t - t0) / span * spread * Math.min(1, span / 0.7))));
+}
+
+/* ---------------- narrador ---------------- */
+const fmtKey = k => k ? `(L=${k[0]}, nó ${k[1]})` : "";
+const nodesList = a => (a || []).map(x => `nó ${x}`).join(", ");
+const NARRATE = {
+  crashed:        e => ["Falha", `Nó ${e.node_id} foi derrubado: não manda nem responde mais nada.`],
+  restarted:      e => ["Falha", `Nó ${e.node_id} religado com a memória vazia. Vai redescobrir o cluster.`],
+  peer_found:     e => ["Descoberta", `Nó ${e.node_id} encontrou o nó ${e.data.peer} pelo DNS.`],
+  peer_down:      e => ["Heartbeat", `Nó ${e.node_id}: o nó ${e.data.peer} ficou 3 s sem responder ao heartbeat.`],
+  peer_up:        e => ["Heartbeat", `Nó ${e.node_id}: o nó ${e.data.peer} voltou a responder.`],
+  leader_down:    e => ["Heartbeat", `Nó ${e.node_id} percebeu que o leiloeiro (nó ${e.data.leader}) caiu.`],
+  election_start: e => ["Bully", `Nó ${e.node_id} começa uma eleição.`],
+  election_sent:  e => ["Bully", `Nó ${e.node_id} manda ELECTION para ${nodesList(e.data.to)} (os de ID maior).`],
+  election_answered: e => ["Bully", `${nodesList(e.data.by)} respondeu "estou vivo": o nó ${e.node_id} espera o vencedor.`],
+  election_no_answer: e => ["Bully", `Nenhum nó maior respondeu ao nó ${e.node_id}.`],
+  leader_elected: e => ["Bully", `Nó ${e.node_id} venceu a eleição e é o novo leiloeiro (termo ${e.data.term}).`],
+  recovered:      e => ["Replicação", `Nó ${e.node_id} juntou os logs de ${e.data.asked} vizinho(s) e ficou com o mais completo (${e.data.entries} entradas).`],
+  leader_ready:   e => ["Bully", `Leiloeiro nó ${e.node_id} pronto para receber lances.`],
+  new_leader:     e => ["Bully", `Nó ${e.node_id} passa a seguir o leiloeiro nó ${e.data.leader} (termo ${e.data.term}).`],
+  stepped_down:   e => ["Bully", `Nó ${e.node_id} viu um termo mais novo (${e.data.term}) e deixou de ser leiloeiro.`],
+  leader_gone:    e => ["Bully", `Nó ${e.node_id}: o nó ${e.data.leader} avisou que não é mais o leiloeiro.`],
+  bid_received:   e => ["Lamport", `${e.data.bidder} deu ${brl(e.data.amount)} pelo nó ${e.node_id}, que carimbou ${fmtKey(e.data.key)}.`],
+  mutex_queued:   e => ["Exclusão mútua", `Leiloeiro: pedido ${fmtKey(e.data.key)} entrou na fila do lote (${e.data.size} na fila).`],
+  mutex_granted:  e => ["Exclusão mútua", `Leiloeiro: a vez é de ${fmtKey(e.data.key)}${e.data.waiting ? `, ${e.data.waiting} esperando` : ""}.`],
+  replicated:     e => ["Quórum", `Entrada ${e.data.seq} gravada por ${e.data.acks} de ${e.data.size} nós: maioria (${e.data.needed}), confirmada.`],
+  no_quorum:      e => ["Quórum", `Só ${e.data.acks} de ${e.data.needed} confirmações: sem maioria, nada é gravado.`],
+  bid_accepted:   e => ["Leilão", `✓ Lance de ${e.data.bidder} (${brl(e.data.amount)}) aceito: posição ${e.data.seq} no log.`],
+  bid_rejected:   e => ["Leilão", `✗ Lance de ${e.data.bidder} (${brl(e.data.amount)}) recusado: ${e.data.reason}.`],
+  snapshot_sent:  e => ["Replicação", `Leiloeiro enviou a cópia do log ao nó ${e.data.peer}.`],
+  snapshot_installed: e => ["Replicação", `Nó ${e.node_id} recebeu a cópia do log do leiloeiro (${e.data.entries} entradas).`],
+  rerecovery:     e => ["Replicação", `O nó ${e.data.peer} tem lances que o leiloeiro não tem: ele recupera o log de novo.`],
+  auction_created: e => ["Leilão", `Lote "${e.data.title}" aberto.`],
+  auction_closed: e => ["Leilão", e.data.winner ? `Lote "${e.data.title}" encerrado: ${e.data.winner} venceu com ${brl(e.data.amount)}.` : `Lote "${e.data.title}" encerrado sem lances.`],
+  speed:          e => ["Demo", e.data.slow ? "Câmera lenta ligada: o leiloeiro demora mais em cada lance." : "Câmera lenta desligada."],
+};
+
+// legendas grandes: o que aconteceu + por que importa
+const HEADLINE = {
+  crashed: e => [`O nó ${e.node_id} caiu.`, "Os outros só vão perceber quando ele deixar de responder ao heartbeat (3 s)."],
+  leader_down: e => [`O leiloeiro (nó ${e.data.leader}) parou de responder.`, "Sem leiloeiro ninguém confirma lances: as réplicas começam a eleição Bully."],
+  election_sent: e => [`Eleição Bully: o nó ${e.node_id} chama os nós de ID maior.`, "Quem tiver ID maior e estiver vivo responde e assume a disputa."],
+  leader_elected: e => [`O nó ${e.node_id} é o novo leiloeiro (termo ${e.data.term}).`, "Maior ID vivo vence. O termo novo faz qualquer líder antigo ser ignorado."],
+  recovered: e => [`O novo leiloeiro recuperou o log dos vizinhos.`, "Todo lance confirmado está numa maioria, então nenhum se perde na troca."],
+  restarted: e => [`O nó ${e.node_id} voltou com a memória vazia.`, "Ele redescobre os vizinhos e recebe uma cópia do log do leiloeiro."],
+  snapshot_installed: e => [`O nó ${e.node_id} recebeu a cópia do log e está igual aos outros.`, "Repare: o hash do log ficou igual em todos os nós."],
+  mutex_queued: e => e.data.size >= 2 ? ["Lances ao mesmo tempo! O leiloeiro coloca os pedidos numa fila.", "Exclusão mútua: um lance por vez no lote, e a fila anda pelo relógio de Lamport (menor (L, nó) primeiro)."] : null,
+  bid_accepted: e => [`Lance de ${e.data.bidder} aceito: ${brl(e.data.amount)}.`, "Só foi confirmado depois que a maioria dos nós gravou."],
+  bid_rejected: e => [`Lance de ${e.data.bidder} recusado.`, e.data.reason.charAt(0).toUpperCase() + e.data.reason.slice(1) + "."],
+  no_quorum: e => [`Sem maioria: o leiloeiro recusa o lance.`, "Escolhemos consistência (CP): melhor recusar do que arriscar dois vencedores."],
+  auction_closed: e => [e.data.winner ? `Lote encerrado: ${e.data.winner} venceu com ${brl(e.data.amount)}.` : "Lote encerrado sem lances.", "O leiloeiro fecha no prazo e todos os nós concordam com o vencedor."],
+};
+
+const evNodesSeen = new Set();
+function narrate(statuses) {
+  const evs = [];
+  statuses.forEach(st => {
+    if (!st.events) return;
+    const backlog = !evNodesSeen.has(st.node_id);  // nó visto agora pela 1ª vez: histórico sem legenda
+    evNodesSeen.add(st.node_id);
+    st.events.forEach(e => {
+      const key = `${e.node_id}:${e.n}`;
+      if (S.seenEv.has(key) || !e.code || !NARRATE[e.code]) return;
+      S.seenEv.add(key); evs.push({ ...e, backlog });
+    });
+  });
+  if (!evs.length) return;
+  evs.sort((a, b) => a.lamport - b.lamport || a.node_id - b.node_id || a.n - b.n);
+  const box = $("steps");
+  box.querySelectorAll(".fresh").forEach(x => x.classList.remove("fresh"));
+  evs.forEach(e => {
+    const [concept, text] = NARRATE[e.code](e);
+    const div = document.createElement("div");
+    div.className = "step" + (e.backlog ? "" : " fresh");
+    div.style.borderLeftColor = color(e.node_id);
+    div.innerHTML = `<span class="c">${esc(concept)}</span><span class="t">${esc(text)}</span><span class="l mono">nó ${e.node_id} · L=${e.lamport}</span>`;
+    box.prepend(div);
+    if (!e.backlog && HEADLINE[e.code]) {
+      const h = HEADLINE[e.code](e);
+      if (h) pushCaption(concept, h[0], h[1], PRIORITY[e.code] || 1);
+    }
+  });
+  while (box.children.length > 60) box.lastChild.remove();
+}
+
+// falha e eleição furam a fila; lances acumulados não atrasam a explicação do que importa agora
+const PRIORITY = { crashed: 3, leader_down: 3, election_sent: 3, leader_elected: 3, recovered: 3, restarted: 3,
+                   snapshot_installed: 2, no_quorum: 3, mutex_queued: 2, bid_accepted: 2, auction_closed: 3, bid_rejected: 1 };
+function pushCaption(concept, what, why, prio = 1) {
+  if (prio >= 3) { S.captions = S.captions.filter(c => c.prio >= 3); if (Date.now() < S.captionUntil && S.current && S.current.prio < 3) S.captionUntil = 0; }
+  if (S.captions.some(c => c.what === what)) return;
+  S.captions.push({ concept, what, why, prio });
+  if (S.captions.length > 3) S.captions = S.captions.slice(-3);
+}
+
+function tickCaption() {
+  const now = Date.now();
+  if (now < S.captionUntil || !S.captions.length) return;
+  const c = S.captions.shift();
+  S.current = c;
+  $("cap-what").innerHTML = `<span class="concept">${esc(c.concept)}</span>${esc(c.what)}`;
+  $("cap-why").textContent = c.why;
+  S.captionUntil = now + (S.slow ? 3400 : 2300);
+}
+function idleCaption() {
+  if (S.captions.length || Date.now() < S.captionUntil + 4000) return;
+  const leader = [...S.nodes.values()].find(n => n.role === "leader" && !n.crashed);
+  $("cap-what").textContent = leader ? `Nó ${leader.node_id} é o leiloeiro. Os jogadores podem dar lances por qualquer nó.` : "Sem leiloeiro no momento: eleição em andamento.";
+  $("cap-why").textContent = leader ? "Bolinhas pequenas são heartbeats: cada nó pergunta \"você está vivo?\" a todos, a cada segundo." : "";
+}
+
+/* ---------------- lote ---------------- */
+function minNext() { return S.lot ? S.lot.min_next_bid : 0; }
+
+function renderLot() {
+  const box = $("lot"), a = S.lot;
+  if (!a) {
+    box.innerHTML = `<div class="empty"><div class="title">Nenhum lote em pregão</div>Abra um lote para os jogadores darem lances.<br><button class="tbtn" onclick="newLot()">Abrir lote</button></div>`;
+    return;
+  }
+  const top = a.highest_bid, open = a.status === "open";
+  const secs = open ? Math.max(0, a.ends_at - Date.now() / 1000) : 0;
+  const bids = [...(a.bids || [])].sort((x, y) => y.seq - x.seq).slice(0, 6);
+  const flash = S.lastBidCount >= 0 && a.bid_count !== S.lastBidCount;
+  S.lastBidCount = a.bid_count;
+  box.innerHTML = `<div class="title"><span>${esc(a.title)}</span>
+      <span class="timer num ${secs < 20 && open ? "ending" : ""}">${open ? `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, "0")}` : "encerrado"}</span></div>
+    <div class="price num ${flash ? "flash" : ""}">${brl(top ? top.amount : a.start_price)}</div>
+    <div class="by">${top ? `maior lance de <b>${esc(top.bidder)}</b>, recebido pelo <span class="tag" style="background:${color(top.node_id)}">nó ${top.node_id}</span>` : `lance inicial · incremento ${brl(a.min_increment)}`}</div>
+    ${!open ? (a.winner ? `<div class="winner">Vencedor: ${esc(a.winner.bidder)} com ${brl(a.winner.amount)}</div>` : `<div class="winner" style="background:#eef0f4;color:var(--ink-soft)">Encerrado sem lances</div>`) : ""}
+    ${bids.length ? `<div class="hist">${bids.map(b => `<div class="row"><span class="num">#${b.seq}</span><span>${esc(b.bidder)}</span>
+      <span class="mono" style="font-size:12px;color:var(--ink-soft)">${fmtKey([b.lamport, b.node_id])}</span><span class="num">${brl(b.amount)}</span></div>`).join("")}</div>` : ""}`;
+}
+
+/* ---------------- ações ---------------- */
+function urlOf(id) { return S.urls.get(id) || null; }
+function aliveIds() { return nodeIds().filter(id => { const s = S.nodes.get(id); return s && s.role !== "down" && !s.crashed; }); }
+
+async function post(url, path, body, ms = 20000) {
+  const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const r = await fetch(url + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}), signal: ctrl.signal });
+    if (r.status === 503 && r.headers.get("X-Node-Crashed")) throw new Error("crashed");
+    return { status: r.status, body: await r.json().catch(() => ({})) };
+  } finally { clearTimeout(t); }
+}
+
+async function bid(p, amount) {
+  if (!S.lot) return;
+  const request_id = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random())).replace(/-/g, "").slice(0, 16);
+  const body = { bidder: p.name, amount, request_id };
+  const tryOrder = [p.via, ...aliveIds().filter(id => id !== p.via)];
+  for (const id of tryOrder) {
+    const url = urlOf(id); if (!url) continue;
+    if (id !== p.via) { p.via = id; p.result = `nó caiu: reconectado ao nó ${id}`; p.cls = "info"; renderTable(); }
+    const pc = nodeCenter(id), el = document.getElementById(`player-${p.i}`);
+    if (el && pc) fly(id, id, "LANCE_CLIENTE", true, 0, [parseFloat(el.style.left), parseFloat(el.style.top)]);
+    p.result = `enviando ${brl(amount)}…`; p.cls = "info"; renderTable();
+    try {
+      const r = await post(url, `/api/auctions/${S.lot.id}/bids`, body);
+      if (r.body.accepted) { p.result = `✓ aceito ${fmtKey([r.body.bid.lamport, r.body.bid.node_id])}`; p.cls = "ok"; }
+      else { p.result = `✗ ${r.body.reason || r.body.detail || "recusado"}`; p.cls = "bad"; }
+      renderTable(); refreshLot();
+      return r;
+    } catch { /* nó não respondeu: tenta o próximo */ }
+  }
+  p.result = "✗ nenhum nó respondeu"; p.cls = "bad"; renderTable();
+}
+
+async function crash(id) {
+  const url = urlOf(id); if (!url) return;
+  try {
+    await post(url, "/api/admin/crash");
+    const wasLeader = (S.nodes.get(id) || {}).role === "leader";
+    pushCaption("Falha", `Derrubamos o nó ${id}${wasLeader ? ", que era o leiloeiro" : ""}.`,
+      "Ninguém avisa os outros: eles só percebem quando o nó parar de responder ao heartbeat por 3 s.", 3);
+  } catch { toast(`Nó ${id} não respondeu.`); }
+  poll();
+}
+async function revive(id) {
+  const url = urlOf(id); if (!url) return;
+  try { await post(url, "/api/admin/restart"); }
+  catch { toast(`O nó ${id} está desligado de verdade. No terminal: docker compose start node${id}`); }
+  poll();
+}
+
+$("sc-race").onclick = () => {
+  if (!S.lot || S.lot.status !== "open") { toast("Abra um lote primeiro."); return; }
+  const amount = minNext();
+  S.players.forEach(p => bid(p, amount));
+};
+$("sc-kill").onclick = () => {
+  const leader = [...S.nodes.values()].find(n => (n.role === "leader" || n.role === "recovering") && !n.crashed);
+  if (leader) crash(leader.node_id); else toast("Nenhum leiloeiro no ar agora.");
+};
+$("sc-revive").onclick = () => {
+  const down = nodeIds().filter(id => { const s = S.nodes.get(id); return s.role === "down" || s.crashed; });
+  if (!down.length) toast("Todos os nós estão no ar.");
+  down.forEach(revive);
+};
+$("slow").onclick = async () => {
+  const slow = !S.slow;
+  await Promise.all(aliveIds().map(id => post(urlOf(id), "/api/admin/speed", { slow }).catch(() => null)));
+  S.slow = slow; $("slow").setAttribute("aria-pressed", slow);
+  toast(slow ? "Câmera lenta ligada." : "Câmera lenta desligada.");
+};
+$("hb-toggle").onclick = () => { S.showHb = !S.showHb; $("hb-toggle").setAttribute("aria-pressed", S.showHb); };
+$("lot-select").onchange = e => { S.lotId = e.target.value; store("demo.lot", S.lotId); S.lastBidCount = -1; refreshLot(); };
+$("new-lot").onclick = () => newLot();
+
+async function newLot() {
+  const used = new Set(S.auctions.map(a => a.title));
+  const title = LOTS.find(t => !used.has(t)) || `Lote ${S.auctions.length + 1}`;
+  try {
+    const { body } = await Cluster.json("/api/auctions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title, start_price: 100, min_increment: 10, duration_s: 600 }) }, 20000);
+    if (body.created) { S.lotId = body.auction.id; store("demo.lot", S.lotId); S.lastBidCount = -1; toast(`Lote "${title}" aberto.`); }
+    else toast(`Não abriu: ${body.reason || body.detail || "erro"}`);
+  } catch { toast("Nenhum nó respondeu."); }
+  refreshLot();
+}
+
+function toast(msg) {
+  const el = document.createElement("div"); el.className = "toast"; el.textContent = msg;
+  $("toasts").appendChild(el); setTimeout(() => el.remove(), 4000);
+}
+
+/* ---------------- laço de atualização ---------------- */
+async function poll() {
+  try {
+    const { body } = await Cluster.json("/api/cluster/status", {}, 2500);
+    const statuses = body.nodes || [];
+    statuses.forEach(st => {
+      S.nodes.set(st.node_id, st);
+      if (st.public_url) S.urls.set(st.node_id, st.public_url);
+    });
+    Cluster.nodes = [...new Set([Cluster.base, ...[...S.urls.values()]])]; Cluster.current = 0;
+    $("dash").href = Cluster.base + "/dashboard";
+    const anySlow = statuses.some(s => s.slow);
+    if (anySlow !== S.slow) { S.slow = anySlow; $("slow").setAttribute("aria-pressed", anySlow); }
+    renderTable();
+    animateMessages(statuses);
+    narrate(statuses);
+    S.firstPoll = false;
+  } catch {
+    $("cap-what").textContent = "Nenhum nó respondeu. O cluster está no ar?";
+    $("cap-why").textContent = "Suba com: docker compose up --build";
+  }
+}
+
+async function refreshLot() {
+  try {
+    const { body } = await Cluster.json("/api/auctions");
+    S.auctions = body.auctions || [];
+    const sel = $("lot-select");
+    const byNew = [...S.auctions].sort((a, b) => b.ends_at - a.ends_at);
+    if (!S.lotId || !S.auctions.some(a => a.id === S.lotId)) {
+      const open = byNew.find(a => a.status === "open");
+      S.lotId = (open || byNew[0] || {}).id || null;
+    }
+    sel.innerHTML = byNew.map(a => `<option value="${a.id}" ${a.id === S.lotId ? "selected" : ""}>${esc(a.title)}${a.status === "open" ? "" : " (encerrado)"}</option>`).join("")
+      || `<option value="">nenhum lote</option>`;
+    if (S.lotId) {
+      const r = await Cluster.json(`/api/auctions/${S.lotId}`);
+      S.lot = r.status === 200 ? r.body : null;
+    } else S.lot = null;
+    renderLot(); renderTable();
+  } catch { /* o poll já mostra o aviso */ }
+}
+
+window.addEventListener("resize", renderTable);
+poll(); refreshLot();
+setInterval(poll, 700);
+setInterval(refreshLot, 1000);
+setInterval(() => { tickCaption(); idleCaption(); }, 300);
+</script>
+</body>
+</html>
