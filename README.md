@@ -15,6 +15,16 @@ Vários servidores recebem lances ao mesmo tempo e **todos concordam sobre a ord
 | Falha ao vivo | `docker compose stop node3` → o nó 2 assume em ~4 s sem perder lances | `scripts/demo.sh`, `docs/ROTEIRO_DEMO.md` |
 | Ponto extra: observabilidade | Painel com nós, líder, termos, relógios de Lamport, fila do mutex e linha do tempo | `node/static/dashboard.html` |
 
+## Entregáveis
+
+| Entregável | Onde está |
+|---|---|
+| Código-fonte e como subir o sistema | este README |
+| Documento de protocolo (formato das mensagens) | [docs/PROTOCOLO.md](docs/PROTOCOLO.md) |
+| Relatório (arquitetura, decisões, algoritmos, CAP, testes) | [docs/Relatorio_Leilao_Distribuido.pdf](docs/Relatorio_Leilao_Distribuido.pdf) (editável: [.docx](docs/Relatorio_Leilao_Distribuido.docx)) |
+| Slide da arquitetura | [docs/Slide_Arquitetura.pptx](docs/Slide_Arquitetura.pptx) |
+| Roteiro da demonstração | [docs/ROTEIRO_DEMO.md](docs/ROTEIRO_DEMO.md) |
+
 ## Como subir
 
 Pré-requisito: Docker com o plugin Compose (Docker Desktop no Windows/macOS).
@@ -119,7 +129,7 @@ node/
 client/cli.py      cliente de linha de comando
 scripts/           check_consistency.py, demo.sh
 tests/             testes unitários e de integração
-docs/              PROTOCOLO.md, ROTEIRO_DEMO.md
+docs/              PROTOCOLO.md, ROTEIRO_DEMO.md, relatório (PDF e .docx), slide da arquitetura
 ```
 
 ## Uso de IA
